@@ -1,0 +1,148 @@
+{
+  "usuarios": [
+    {
+      "id": 1,
+      "nombre": "Administrador",
+      "email": "admin@ladincloud.local",
+      "password_hash": "$2b$12$JDeHrEeEFDMNcsoHghWEkONMiC.GUE5aCvSKB9wiSybI6DNtbMC1e",
+      "rol": "admin",
+      "activo": 1,
+      "codigo_asesora": null
+    }
+  ],
+  "clientes": [
+    {
+      "id": 1,
+      "codigo_cliente": "LC-CLI-000001",
+      "nombre": "Corporación",
+      "apellido": "Transoceánica",
+      "telefono": "+584241234567",
+      "email": "logistica@transoceanica.com",
+      "empresa": "Transoceanic S.A.",
+      "asesora_id": 1,
+      "estado": "process",
+      "estado_venezuela": "Carabobo",
+      "fecha_primer_contacto": "2026-09-01",
+      "tipo_mercancia": null,
+      "cajas_packing_list": null,
+      "cajas_en_china": null,
+      "cajas_recibidas_venezuela": null,
+      "cbm_packing_list": null,
+      "cbm_real_china": null,
+      "observaciones": "Cliente importador mayorista de calzado y textiles",
+      "fecha_registro": "2026-09-14 13:03:34",
+      "fecha_actualizacion": "2026-09-14 13:03:34"
+    }
+  ],
+  "contenedores": [
+    {
+      "id": 1,
+      "numero": "MSCU-9021482",
+      "origen": "Yiwu, China",
+      "fecha_salida": "2026-09-05",
+      "fecha_estimada": "2026-10-20",
+      "fecha_llegada": null,
+      "estado": "transit",
+      "observaciones": "Embarque marítimo directo Valencia"
+    }
+  ],
+  "etiquetas": [
+    {
+      "id": 1,
+      "numero": "LC-FAM-880",
+      "cliente_id": 1,
+      "contenedor_id": 1,
+      "estado": "transit",
+      "observaciones": null,
+      "lista": 0,
+      "tipo_mercancia": "Calzado Deportivo",
+      "cajas_packing_list": 100,
+      "cajas_en_china": 60,
+      "cajas_recibidas_venezuela": null,
+      "cbm_packing_list": 12.5,
+      "cbm_real_china": 7.5,
+      "familia_codigo": null,
+      "etiqueta_padre_id": null,
+      "tiene_subetiquetas": 1,
+      "fecha_llegada_china": null,
+      "fecha_salida_china": null,
+      "fecha_creacion": "2026-09-14 13:03:34",
+      "fecha_actualizacion": "2026-09-14 13:03:34"
+    }
+  ],
+  "quejas": [
+    {
+      "id": 1,
+      "usuario_id": 1,
+      "asunto": "Inconsistencia en CBM de empaque",
+      "detalle": "El cubicaje real reportado en almacén China difiere en 0.5 CBM con el packing list enviado por proveedor.",
+      "prioridad": "alta",
+      "estado": "respondida",
+      "respuesta": "Se verificó con el inspector en Yiwu. El peso/volumen ajustado corresponde al embalaje reforzado con guacales de madera.",
+      "creado_en": "2026-09-14 13:03:34",
+      "respondido_en": "2026-09-14 13:03:34",
+      "fecha_incidencia": "2026-09-12",
+      "codigo_asesor": null,
+      "codigo_cliente": "LC-CLI-000001",
+      "codigo_etiqueta": "LC-FAM-880",
+      "area_involucrada": "logistica",
+      "evidencia": "Fotos de guía física recibida en almacén Yiwu."
+    }
+  ],
+  "recordatorios": [],
+  "notas_equipo": [
+    {
+      "id": 1,
+      "usuario_id": 1,
+      "texto": "Recordatorio: Revisar despachos de contenedores de Yiwu el viernes.",
+      "creado_en": "2026-09-14 13:03:34"
+    }
+  ],
+  "historial": [
+    {
+      "id": 1,
+      "usuario_id": 1,
+      "accion": "Cliente LC-CLI-000001 creado",
+      "tabla_afectada": "clientes",
+      "registro_id": 1,
+      "descripcion": "Se creó a Corporación Transoceánica. Estado: process.",
+      "fecha": "2026-09-14 13:03:34"
+    },
+    {
+      "id": 2,
+      "usuario_id": 1,
+      "accion": "Contenedor MSCU-9021482 creado",
+      "tabla_afectada": "contenedores",
+      "registro_id": 1,
+      "descripcion": "Se creó el contenedor MSCU-9021482.",
+      "fecha": "2026-09-14 13:03:34"
+    },
+    {
+      "id": 3,
+      "usuario_id": 1,
+      "accion": "Etiqueta LC-FAM-880 agregada",
+      "tabla_afectada": "etiquetas",
+      "registro_id": 1,
+      "descripcion": "Se creó la etiqueta LC-FAM-880.",
+      "fecha": "2026-09-14 13:03:34"
+    },
+    {
+      "id": 4,
+      "usuario_id": 1,
+      "accion": "Incidencia enviada: Inconsistencia en CBM de empaque",
+      "tabla_afectada": "quejas",
+      "registro_id": 1,
+      "descripcion": "Registrada por Administrador.",
+      "fecha": "2026-09-14 13:03:34"
+    },
+    {
+      "id": 5,
+      "usuario_id": 1,
+      "accion": "Incidencia 1 actualizada",
+      "tabla_afectada": "quejas",
+      "registro_id": 1,
+      "descripcion": "Respuesta registrada.",
+      "fecha": "2026-09-14 13:03:34"
+    }
+  ]
+}

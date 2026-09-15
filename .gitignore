@@ -1,0 +1,26 @@
+# Dependencias
+node_modules/
+
+# Archivos de entorno local
+.env
+data.env
+
+# Base de datos local SQLite y archivos temporales
+*.db
+*.sqlite
+ladin_cloud.db
+
+# Logs y caches
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Archivos temporales de pruebas
+scratch/
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

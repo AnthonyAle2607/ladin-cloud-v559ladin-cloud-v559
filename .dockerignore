@@ -1,0 +1,10 @@
+node_modules
+.git
+.gitignore
+.env
+data.env
+*.log
+scratch
+ladin_cloud.db
+DOCUMENTO_LEIBLE_LADIN_CLOUD.md
+ladin_cloud_dump.json
