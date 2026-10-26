@@ -20,7 +20,7 @@ function me(){return db.users.find(u=>u.id===session?.userId)}
 function scopedClients(){const u=me();return u?.role==='admin'?db.clients:db.clients.filter(c=>c.advisorId===u?.id)}
 function scopedLabels(){const cs=new Set(scopedClients().map(c=>c.id));return me()?.role==='admin'?db.labels:db.labels.filter(l=>cs.has(l.clientId))}
 function scopedContainers(){return db.containers}
-function esc(v=''){return String(v).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\\':'&#92;'}[c]))}
+function esc(v=''){return String(v).replace(/[&<>"'\\]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','\\':'&#92;'}[c]))}
 function fmtDate(d){if(!d)return '—';const raw=String(d);const s=/^\d{4}-\d{2}-\d{2}/.test(raw)?raw.slice(0,10):(d instanceof Date&&!Number.isNaN(d.getTime())?d.toISOString().slice(0,10):raw.slice(0,10));const [y,m,day]=s.split('-');return y&&m&&day?`${day}/${m}/${y}`:'—'}
 function fmtDT(d){if(!d)return '—';return new Date(d).toLocaleString('es-VE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}
 function userName(id){return db.users.find(u=>u.id===id)?.name||'—'}

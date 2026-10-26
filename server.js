@@ -7,6 +7,9 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
 const path = require('path');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
@@ -26,11 +29,46 @@ fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
-const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_THIS_LADIN_CLOUD_SECRET';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const MIN_SECRET_LENGTH = 32;
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const DOWNLOADS_DIR = path.join(__dirname, 'descargas');
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
 
-app.use(cors());
+function resolveJwtSecret() {
+  const configured = process.env.JWT_SECRET;
+  if (configured && configured.length >= MIN_SECRET_LENGTH) return configured;
+  if (IS_PRODUCTION) {
+    console.error(`❌ JWT_SECRET es obligatorio en producción (mínimo ${MIN_SECRET_LENGTH} caracteres).`);
+    process.exit(1);
+  }
+  console.warn('⚠️ JWT_SECRET no definido: se usa un secreto temporal (las sesiones se cierran al reiniciar).');
+  return crypto.randomBytes(MIN_SECRET_LENGTH).toString('hex');
+}
+
+const JWT_SECRET = resolveJwtSecret();
+
+// Detrás del proxy de Easypanel, la IP real del cliente viene en X-Forwarded-For.
+if (IS_PRODUCTION) app.set('trust proxy', 1);
+
+// Sin CORS_ORIGIN la app solo responde a su propio origen (frontend servido por este mismo servidor).
+const corsOrigins = (process.env.CORS_ORIGIN || '').split(',').map(o => o.trim()).filter(Boolean);
+if (corsOrigins.length) app.use(cors({ origin: corsOrigins }));
+
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static(__dirname));
+// Solo se publica public/ y descargas/; el código, uploads/ y los .env nunca se sirven.
+app.use(express.static(PUBLIC_DIR));
+app.use('/descargas', express.static(DOWNLOADS_DIR));
+
+const loginLimiter = rateLimit({
+  windowMs: LOGIN_WINDOW_MS,
+  limit: LOGIN_MAX_ATTEMPTS,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos. Intenta de nuevo en unos minutos.' }
+});
 
 /* ==========================================================================
    UTILIDADES & MAREADORES DE DTO (DATOS DE SALIDA)
@@ -368,20 +406,26 @@ async function seed() {
     await db.query('DELETE FROM usuarios WHERE id = ANY($1::int[])', [ids]);
   }
 
-  // Usuario Administrador por Defecto
-  const users = [
-    { name: 'Administrador', email: 'admin@ladincloud.local', pass: 'admin123', role: 'admin' }
-  ];
+  await ensureAdminUser();
+}
 
-  for (const u of users) {
-    const existing = await db.query('SELECT id FROM usuarios WHERE email=$1', [u.email]);
-    if (!existing.rows.length) {
-      const hash = await bcrypt.hash(u.pass, 12);
-      await db.query('INSERT INTO usuarios(nombre,email,password_hash,rol,activo) VALUES($1,$2,$3,$4,TRUE)', [u.name, u.email, hash, u.role]);
-    } else {
-      const hash = await bcrypt.hash(u.pass, 12);
-      await db.query('UPDATE usuarios SET nombre=$1,password_hash=$2,rol=$3,activo=TRUE WHERE email=$4', [u.name, hash, u.role, u.email]);
-    }
+// Crea el administrador inicial solo si no existe; nunca modifica uno existente.
+async function ensureAdminUser() {
+  const email = (process.env.ADMIN_EMAIL || 'admin@ladincloud.local').trim().toLowerCase();
+  const existing = await db.query('SELECT id FROM usuarios WHERE lower(email)=$1', [email]);
+  if (existing.rows.length) return;
+
+  const configured = process.env.ADMIN_PASSWORD;
+  const generated = !configured;
+  const password = configured || crypto.randomBytes(12).toString('base64url');
+  const hash = await bcrypt.hash(password, 12);
+  await db.query('INSERT INTO usuarios(nombre,email,password_hash,rol,activo) VALUES($1,$2,$3,$4,TRUE)', ['Administrador', email, hash, 'admin']);
+
+  if (generated) {
+    console.log('====================================================');
+    console.log(`🔑 Administrador inicial creado: ${email}`);
+    console.log(`🔑 Contraseña temporal (se muestra una sola vez): ${password}`);
+    console.log('====================================================');
   }
 }
 
@@ -418,7 +462,7 @@ async function logAction(userId, action, table, recordId, description = '') {
    RUTAS PRINCIPALES DE AUTENTICACIÓN Y BOOTSTRAP
    ========================================================================== */
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body || {};
     const r = await db.query('SELECT * FROM usuarios WHERE LOWER(email)=LOWER($1) AND activo=TRUE', [email || '']);
@@ -1107,7 +1151,7 @@ app.get('/api/admin/backup-csv.zip', auth, async (req, res) => {
 
 app.use((req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Ruta no encontrada' });
-  res.sendFile(path.join(__dirname, 'index.html'));
+  res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
 /* ==========================================================================
