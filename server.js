@@ -1,5 +1,5 @@
 /**
- * LADIN CLOUD - Servidor Backend Express & API REST
+ * CRIOLLO CARGO - Servidor Backend Express & API REST
  * Version: v559 Fix4
  */
 require('dotenv').config({ path: process.env.ENV_FILE || 'data.env' });
@@ -966,7 +966,7 @@ app.get('/api/quejas/:id/pdf', auth, async (req, res) => {
 
     const doc = new PDFDocument({ size: 'A4', margin: 48 });
     doc.pipe(res);
-    doc.font('Helvetica-Bold').fontSize(18).text(`LADIN CLOUD - INCIDENCIA INC-${String(id).padStart(4, '0')}`);
+    doc.font('Helvetica-Bold').fontSize(18).text(`CRIOLLO CARGO - INCIDENCIA INC-${String(id).padStart(4, '0')}`);
     doc.moveDown(0.5);
     doc.font('Helvetica').fontSize(10).text(`Fecha: ${q.rows[0].fecha_incidencia || q.rows[0].creado_en}`);
     doc.text(`Asunto: ${q.rows[0].asunto}`);
@@ -1123,7 +1123,7 @@ app.get('/api/admin/backup-csv.zip', auth, async (req, res) => {
 
     const stamp = new Date();
     const pad = n => String(n).padStart(2, '0');
-    const filename = `LadinCloud_Backup_${stamp.getFullYear()}-${pad(stamp.getMonth() + 1)}-${pad(stamp.getDate())}_${pad(stamp.getHours())}-${pad(stamp.getMinutes())}-${pad(stamp.getSeconds())}.zip`;
+    const filename = `CriolloCargo_Backup_${stamp.getFullYear()}-${pad(stamp.getMonth() + 1)}-${pad(stamp.getDate())}_${pad(stamp.getHours())}-${pad(stamp.getMinutes())}-${pad(stamp.getSeconds())}.zip`;
 
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -1176,7 +1176,7 @@ seed()
     app.listen(PORT, '0.0.0.0', () => {
       const localIps = getLocalIpAddresses();
       console.log('====================================================');
-      console.log(`🚀 LADIN CLOUD Servidor Activo en Puerto ${PORT}`);
+      console.log(`🚀 CRIOLLO CARGO Servidor Activo en Puerto ${PORT}`);
       console.log(`📍 Acceso Local:  http://localhost:${PORT}`);
       if (localIps.length) {
         localIps.forEach(ip => console.log(`🌐 Acceso Red:    http://${ip}:${PORT}`));
@@ -1185,6 +1185,6 @@ seed()
     });
   })
   .catch(err => {
-    console.error('❌ Error iniciando Ladin Cloud:', err);
+    console.error('❌ Error iniciando Criollo Cargo:', err);
     process.exit(1);
   });
