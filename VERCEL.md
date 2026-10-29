@@ -17,7 +17,7 @@ Todos se pueden ejecutar más de una vez sin problema.
 ## 2. Crear el proyecto en Vercel
 
 1. *Add New… → Project* e importa el repositorio `ladin-cloud-v559ladin-cloud-v559` (rama `main`, o la rama que quieras publicar).
-2. **Framework Preset: Other.** No cambies el comando de build ni la carpeta de salida: `vercel.json` ya fija la carpeta de salida (`public`). **Root Directory:** la raíz del repositorio.
+2. **Framework Preset: Other.** Vercel detecta `express` en las dependencias y activa por su cuenta un modo «Express» que busca su propio archivo de arranque y falla con *«No entrypoint found which imports express»*. Por eso `vercel.json` trae `"framework": null` (sin preset) y la app entra por `api/index.js`. Si aun así ve el error, en *Settings → Build & Development Settings* pon **Framework Preset = Other** y deja vacíos el comando de build y la carpeta de salida. **Root Directory:** la raíz del repositorio.
 3. Antes de desplegar, añade las variables de entorno (sección siguiente).
 
 ## 3. Variables de entorno (Settings → Environment Variables)
