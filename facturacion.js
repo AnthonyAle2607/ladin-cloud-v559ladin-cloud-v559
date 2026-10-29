@@ -11,6 +11,8 @@
  * Cada asesor ve únicamente sus facturas y sus comisiones.
  */
 const PDFDocument = require('pdfkit');
+const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
 
 const TARIFA_MARITIMA = 660; // USD por CBM, igual que el cotizador de la web
 const REGLAS = {
@@ -32,6 +34,21 @@ const r3 = (n) => Math.round((n + Number.EPSILON) * 1000) / 1000;
 const fecha = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
 const texto = (v, max) => { const s = String(v ?? '').trim(); return s ? s.slice(0, max) : null; };
 const iso = (v) => (v instanceof Date ? v.toISOString() : v ? String(v) : '');
+const usd = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+/**
+ * Teléfono → número para wa.me (solo dígitos, con código de país). Venezuela por defecto:
+ * 0412-1234567 y 412-1234567 → 584121234567. Si ya trae código (+58…, +1…) se respeta. Devuelve null si no es utilizable.
+ */
+function numeroWhatsapp(telefono) {
+  let d = String(telefono || '').replace(/\D/g, '').replace(/^00/, '');
+  if (!d) return null;
+  if (/^0[24]\d{9}$/.test(d)) d = `58${d.slice(1)}`; // 0412 1234567 / 0212 1234567
+  else if (/^[24]\d{9}$/.test(d)) d = `58${d}`; // 412 1234567 (sin el 0 inicial)
+  return d.length >= 11 && d.length <= 15 ? d : null;
+}
+
+const diasEntre = (desde, hasta) => Math.floor((Date.UTC(+hasta.slice(0, 4), +hasta.slice(5, 7) - 1, +hasta.slice(8, 10)) - Date.UTC(+desde.slice(0, 4), +desde.slice(5, 7) - 1, +desde.slice(8, 10))) / 86400000);
 
 /** Monto de una línea: flete marítimo + traslado terrestre + extra de despacho. */
 function montoLinea({ cbm, tarifaMaritima, volumenTerrestre, tarifaTerrestre, extra }) {
@@ -90,7 +107,7 @@ async function ensureSchema(db) {
 
 /* ---------- rutas ---------- */
 
-function registrar(app, { db, auth, intId, logAction, PDFKit = PDFDocument }) {
+function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDocument }) {
   const soloAdmin = (req, res, next) => (req.user.rol === 'admin' ? next() : res.status(403).json({ error: 'Solo el administrador puede hacer esto' }));
   const FACTURA_SQL = `SELECT f.id,f.codigo,f.cliente_id,f.asesora_id,TO_CHAR(f.fecha_factura,'YYYY-MM-DD') AS fecha_factura,
       TO_CHAR(f.fecha_pedido,'YYYY-MM-DD') AS fecha_pedido,TO_CHAR(f.fecha_carga,'YYYY-MM-DD') AS fecha_carga,
@@ -321,15 +338,14 @@ function registrar(app, { db, auth, intId, logAction, PDFKit = PDFDocument }) {
 
   /* ----- PDF ----- */
 
-  app.get('/api/facturas/:id/pdf', auth, async (req, res) => {
+  /** Genera el PDF de una factura ya cargada (fila de FACTURA_SQL) y lo envía por `res`. Lo usan la ruta con sesión y el enlace temporal. */
+  async function servirPdf(res, f, disposicion = 'attachment') {
     try {
-      const { f, error } = await cargarFactura(intId(req.params.id), req.user);
-      if (error) return res.status(error[0]).json({ error: error[1] });
       const items = (await db.query('SELECT * FROM factura_items WHERE factura_id=$1 ORDER BY id', [f.id])).rows.map(itemOut);
       const fo = facturaOut(f);
       const doc = new PDFKit({ size: 'A4', margin: 40 });
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename="${fo.codigo.replace(/[^A-Za-z0-9_-]/g, '_')}.pdf"`);
+      res.setHeader('Content-Disposition', `${disposicion}; filename="${fo.codigo.replace(/[^A-Za-z0-9_-]/g, '_')}.pdf"`);
       doc.pipe(res);
       const usd = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -375,6 +391,51 @@ function registrar(app, { db, auth, intId, logAction, PDFKit = PDFDocument }) {
     } catch (e) {
       console.error(e);
       if (!res.headersSent) res.status(500).json({ error: 'No se pudo generar el PDF' });
+    }
+  }
+
+  app.get('/api/facturas/:id/pdf', auth, async (req, res) => {
+    try {
+      const { f, error } = await cargarFactura(intId(req.params.id), req.user);
+      if (error) return res.status(error[0]).json({ error: error[1] });
+      return servirPdf(res, f);
+    } catch (e) { console.error(e); if (!res.headersSent) res.status(500).json({ error: 'No se pudo generar el PDF' }); }
+  });
+
+  /* ----- Enviar la factura por WhatsApp: enlace temporal al PDF (WhatsApp no deja adjuntar desde un enlace) ----- */
+
+  const ENLACE_DIAS = 14;
+  const limiteEnlace = rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false, message: 'Demasiadas solicitudes. Intenta de nuevo en unos minutos.' });
+
+  /** Base pública para armar enlaces: PUBLIC_URL si está definida (recomendado); si no, el host de la solicitud del administrador. */
+  const baseUrl = (req) => String(process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+
+  app.post('/api/facturas/:id/enlace', auth, soloAdmin, async (req, res) => {
+    try {
+      const { f, error } = await cargarFactura(intId(req.params.id), req.user);
+      if (error) return res.status(error[0]).json({ error: error[1] });
+      if (f.estado === 'anulada') return res.status(409).json({ error: 'La factura está anulada' });
+      const token = jwt.sign({ typ: 'factura', fid: f.id }, JWT_SECRET, { expiresIn: `${ENLACE_DIAS}d` });
+      const url = `${baseUrl(req)}/f/${token}`;
+      const fo = facturaOut(f);
+      const numero = numeroWhatsapp(fo.clientPhone);
+      const mensaje = `Hola ${fo.clientName}, te compartimos tu factura ${fo.codigo} por ${usd(fo.total)}${fo.balance > 0.005 ? ` (saldo pendiente ${usd(fo.balance)})` : ' (pagada)'}. Puedes verla aquí (válido ${ENLACE_DIAS} días): ${url}`;
+      await logAction(req.user.id, `Enlace de ${f.codigo} generado`, 'facturas', f.id, 'Para enviar por WhatsApp.');
+      res.json({ url, days: ENLACE_DIAS, phone: numero, message: mensaje, whatsapp: numero ? `https://wa.me/${numero}?text=${encodeURIComponent(mensaje)}` : null });
+    } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo generar el enlace' }); }
+  });
+
+  /** Descarga pública (sin sesión) con el enlace firmado y de vida corta. Solo entrega el PDF de esa factura. */
+  app.get('/f/:token', limiteEnlace, async (req, res) => {
+    try {
+      const p = jwt.verify(String(req.params.token), JWT_SECRET);
+      if (p.typ !== 'factura' || !Number.isInteger(p.fid)) throw new Error('token');
+      const f = (await db.query(`${FACTURA_SQL} WHERE f.id=$1`, [p.fid])).rows[0];
+      if (!f) return res.status(404).send('Factura no encontrada');
+      res.setHeader('Cache-Control', 'private, no-store');
+      return servirPdf(res, f, 'inline'); // se abre en el navegador del teléfono
+    } catch (e) {
+      res.status(410).type('text/plain').send('Este enlace venció o no es válido. Pide uno nuevo.');
     }
   });
 
@@ -491,6 +552,111 @@ function registrar(app, { db, auth, intId, logAction, PDFKit = PDFDocument }) {
       res.json({ ok: true, paid: r.rowCount });
     } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudieron marcar las comisiones' }); }
   });
+
+  /* ----- Recibo de pago de comisiones (PDF) ----- */
+
+  app.get('/api/comisiones/recibo', auth, async (req, res) => {
+    try {
+      const admin = req.user.rol === 'admin';
+      const asesoraId = admin ? intId(req.query.asesora) : req.user.id; // el asesor solo puede pedir el suyo
+      if (!asesoraId) return res.status(400).json({ error: 'Elige un asesor' });
+      const desde = fecha(req.query.desde) || '0001-01-01';
+      const hasta = fecha(req.query.hasta) || '9999-12-31';
+      const filas = (await db.query(`${COMISION_SQL} WHERE m.asesora_id=$1 AND m.estado='pagada' AND m.fecha_pago BETWEEN $2 AND $3 ORDER BY m.fecha_pago, m.id`, [asesoraId, desde, hasta])).rows.map(comisionOut);
+      if (!filas.length) return res.status(404).json({ error: 'No hay comisiones pagadas de este asesor en ese período' });
+      const asesora = (await db.query('SELECT nombre,codigo_asesora FROM usuarios WHERE id=$1', [asesoraId])).rows[0] || {};
+      const total = r2(filas.reduce((s, c) => s + c.amount, 0));
+
+      const doc = new PDFKit({ size: 'A4', margin: 40 });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="recibo-comisiones-${String(asesora.codigo_asesora || asesoraId).replace(/[^A-Za-z0-9_-]/g, '_')}.pdf"`);
+      doc.pipe(res);
+      doc.font('Helvetica-Bold').fontSize(20).text('CRIOLLO CARGO');
+      doc.font('Helvetica').fontSize(10).fillColor('#5a5b54').text('Recibo de pago de comisiones');
+      doc.fillColor('#111210').fontSize(11);
+      let y = 90;
+      doc.font('Helvetica-Bold').text('Asesor: ', 40, y, { continued: true }).font('Helvetica').text(`${asesora.nombre || '—'}${asesora.codigo_asesora ? ` (${asesora.codigo_asesora})` : ''}`);
+      y += 16;
+      const periodo = req.query.desde || req.query.hasta ? `${req.query.desde ? fecha(req.query.desde) || '' : 'inicio'} a ${req.query.hasta ? fecha(req.query.hasta) || '' : 'hoy'}` : 'Todos los pagos registrados';
+      doc.font('Helvetica-Bold').text('Período: ', 40, y, { continued: true }).font('Helvetica').text(periodo);
+      y += 16;
+      doc.font('Helvetica-Bold').text('Emitido: ', 40, y, { continued: true }).font('Helvetica').text(new Date().toISOString().slice(0, 10));
+      y += 28;
+
+      const cols = [[40, 62, 'Fecha pago'], [102, 78, 'Factura'], [180, 150, 'Cliente'], [330, 70, 'Base'], [400, 80, 'Regla'], [480, 75, 'Comisión']];
+      doc.rect(40, y, 515, 18).fill('#111210');
+      doc.fillColor('#ece8de').font('Helvetica-Bold').fontSize(8.5);
+      cols.forEach(([x, w, t]) => doc.text(t, x + 3, y + 5, { width: w - 6 }));
+      y += 18;
+      doc.fillColor('#111210').font('Helvetica').fontSize(9);
+      for (const c of filas) {
+        if (y > 700) { doc.addPage(); y = 40; }
+        const regla = c.rule === 'fijo_cbm' ? `${usd(c.rate)}/CBM` : `${c.rate}% ${c.rule === 'porcentaje_flete' ? 'flete' : 'total'}`;
+        const fila = [c.paidDate, c.invoiceCode, `${c.clientCode ? c.clientCode + ' · ' : ''}${c.clientName}`, c.rule === 'fijo_cbm' ? `${c.base} CBM` : usd(c.base), regla, usd(c.amount)];
+        cols.forEach(([x, w], k) => doc.text(fila[k], x + 3, y + 4, { width: w - 6, ellipsis: true, lineBreak: false }));
+        y += 18;
+        doc.moveTo(40, y).lineTo(555, y).strokeColor('#c9c4b5').lineWidth(0.5).stroke();
+      }
+      y += 14;
+      doc.font('Helvetica-Bold').fontSize(13).text(`TOTAL PAGADO: ${usd(total)}`, 40, y, { width: 515, align: 'right' });
+      y += 24;
+      doc.font('Helvetica').fontSize(9).fillColor('#5a5b54').text(`${filas.length} comisión(es) en ${new Set(filas.map((c) => c.invoiceId)).size} factura(s).`, 40, y, { width: 515, align: 'right' });
+      if (y > 640) { doc.addPage(); y = 40; } else y += 60;
+      doc.fillColor('#111210').strokeColor('#111210').lineWidth(0.8);
+      doc.moveTo(60, y + 40).lineTo(260, y + 40).stroke().moveTo(330, y + 40).lineTo(530, y + 40).stroke();
+      doc.fontSize(9).text('Entregado por', 60, y + 46, { width: 200, align: 'center' }).text('Recibido por (firma y fecha)', 330, y + 46, { width: 200, align: 'center' });
+      doc.end();
+    } catch (e) {
+      console.error(e);
+      if (!res.headersSent) res.status(500).json({ error: 'No se pudo generar el recibo' });
+    }
+  });
+
+  /* ----- Cobranza: antigüedad de saldos ----- */
+
+  const TRAMOS = [
+    { id: '0-15', label: '0 a 15 días', min: 0, max: 15 },
+    { id: '16-30', label: '16 a 30 días', min: 16, max: 30 },
+    { id: '31-60', label: '31 a 60 días', min: 31, max: 60 },
+    { id: '61+', label: 'Más de 60 días', min: 61, max: Infinity },
+  ];
+
+  app.get('/api/cobranza', auth, async (req, res) => {
+    try {
+      const admin = req.user.rol === 'admin';
+      const asesoraId = admin ? intId(req.query.asesora) : req.user.id;
+      const rows = (await db.query(`${FACTURA_SQL} WHERE f.estado='emitida' AND f.pagado < f.total ${asesoraId ? 'AND f.asesora_id=$1' : ''} ORDER BY f.fecha_factura`, asesoraId ? [asesoraId] : [])).rows;
+      const hoy = new Date().toISOString().slice(0, 10);
+      const buckets = TRAMOS.map((t) => ({ id: t.id, label: t.label, balance: 0, invoices: 0 }));
+      const porCliente = new Map();
+      const porAsesor = new Map();
+      for (const f of rows) {
+        const saldo = r2(Number(f.total) - Number(f.pagado));
+        if (saldo <= 0.005) continue;
+        const dias = Math.max(0, diasEntre(f.fecha_factura, hoy));
+        const b = buckets[TRAMOS.findIndex((t) => dias >= t.min && dias <= t.max)];
+        b.balance = r2(b.balance + saldo); b.invoices++;
+        const k = f.cliente_id;
+        const c = porCliente.get(k) || { clientId: `c${f.cliente_id}`, clientCode: f.codigo_cliente || '', clientName: [f.cliente_nombre, f.cliente_apellido].filter(Boolean).join(' '), clientPhone: f.cliente_telefono || '', advisorId: f.asesora_id ? `u${f.asesora_id}` : '', advisorName: f.asesora_nombre || '', balance: 0, oldestDays: 0, invoices: [] };
+        c.balance = r2(c.balance + saldo); c.oldestDays = Math.max(c.oldestDays, dias);
+        c.invoices.push({ id: String(f.id), code: f.codigo, date: f.fecha_factura, days: dias, total: Number(f.total), balance: saldo });
+        porCliente.set(k, c);
+      }
+      for (const c of porCliente.values()) {
+        const a = porAsesor.get(c.advisorId) || { advisorId: c.advisorId, advisorName: c.advisorName || 'Sin asesor', balance: 0, clients: 0, oldestDays: 0 };
+        a.balance = r2(a.balance + c.balance); a.clients++; a.oldestDays = Math.max(a.oldestDays, c.oldestDays);
+        porAsesor.set(c.advisorId, a);
+      }
+      const clientes = [...porCliente.values()].sort((a, b) => b.oldestDays - a.oldestDays || b.balance - a.balance);
+      res.json({
+        today: hoy,
+        totals: { balance: r2(buckets.reduce((s, b) => s + b.balance, 0)), invoices: buckets.reduce((s, b) => s + b.invoices, 0), clients: clientes.length },
+        buckets,
+        byClient: clientes,
+        byAdvisor: admin ? [...porAsesor.values()].sort((a, b) => b.balance - a.balance) : [],
+      });
+    } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo cargar la cobranza' }); }
+  });
 }
 
-module.exports = { ensureSchema, registrar, calcularComision, montoLinea, REGLAS, TARIFA_MARITIMA };
+module.exports = { ensureSchema, registrar, calcularComision, montoLinea, numeroWhatsapp, diasEntre, REGLAS, TARIFA_MARITIMA };

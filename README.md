@@ -52,3 +52,9 @@ Pantallas nuevas del menú **Finanzas** (`public/facturacion.js`) y su servidor 
 - Rutas que la web ya llamaba y no existían: `POST/PUT /api/usuarios`, `GET /api/portfolio`, `POST /api/admin/import-clients`.
 
 Permisos: solo el administrador emite facturas, anula, registra pagos, cambia reglas, importa y paga comisiones; los asesores solo leen lo suyo.
+
+### Cobranza, recibo de comisiones y envío por WhatsApp
+
+- **Cobranza** (Finanzas → Cobranza): saldos por cobrar en tramos de 0-15, 16-30, 31-60 y más de 60 días **desde la fecha de la factura** (el sistema no guarda fecha de vencimiento). Lista los clientes con más atraso primero; desde cada uno se abren sus facturas, se crea un recordatorio (usa los recordatorios del sistema) o se abre WhatsApp con el mensaje de cobro. Cada asesor ve solo su cartera; el administrador ve además el resumen por asesor.
+- **Recibo de comisiones** (Comisiones → «Recibo PDF»): PDF con las comisiones **ya pagadas** de un asesor en un período, con detalle por factura y espacio de firma. El asesor puede descargar el suyo.
+- **Enviar por WhatsApp** (en la factura): genera un enlace temporal al PDF (válido 14 días, firmado, con límite de solicitudes) y abre WhatsApp con el mensaje armado. WhatsApp no permite adjuntar archivos desde un enlace, por eso el PDF va como enlace. Los teléfonos de Venezuela se normalizan (`0412-1234567` → `584121234567`); si el teléfono no sirve, el panel pide uno. Define `PUBLIC_URL` (por ejemplo `https://tu-dominio.com`) para que el enlace use tu dominio; sin ella usa el host desde el que el administrador abre el panel.

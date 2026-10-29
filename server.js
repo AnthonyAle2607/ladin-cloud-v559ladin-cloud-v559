@@ -1171,7 +1171,7 @@ app.get('/api/admin/backup-csv.zip', auth, async (req, res) => {
    ========================================================================== */
 
 appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction });
-facturacion.registrar(app, { db, auth, intId, logAction });
+facturacion.registrar(app, { db, auth, intId, logAction, JWT_SECRET });
 importador.registrar(app, { db, auth, intId, logAction });
 require('./usuarios').registrar(app, { db, auth, intId, logAction, userOut, getBootstrap });
 

@@ -44,13 +44,13 @@
      Menú y enrutado de vistas
      ===================================================================================================== */
 
-  const VISTAS = { billing: mostrarFacturacion, commissions: mostrarComisiones, import: mostrarImportacion };
+  const VISTAS = { billing: mostrarFacturacion, collections: mostrarCobranza, commissions: mostrarComisiones, import: mostrarImportacion };
 
   const shellOriginal = window.shellHTML;
   window.shellHTML = function () {
     const html = shellOriginal();
     const btn = (v, t) => `<button data-view="${v}" title="${t}"><span class="nav-label">${t}</span></button>`;
-    const items = [btn('billing', 'Facturación'), btn('commissions', 'Comisiones'), isAdmin() ? btn('import', 'Importar datos') : ''].join('');
+    const items = [btn('billing', 'Facturación'), btn('collections', 'Cobranza'), btn('commissions', 'Comisiones'), isAdmin() ? btn('import', 'Importar datos') : ''].join('');
     return html.replace('</nav>', `<div class="nav-group"><div class="nav-divider"><span class="nav-label">Finanzas</span></div>${items}</div></nav>`);
   };
 
@@ -240,9 +240,15 @@
         ${f.payments.length ? f.payments.map((p) => `<div class="fx-rule-row"><span>${esc(fecha(p.date))} · <b>${usd(p.amount)}</b> ${p.method ? '· ' + esc(p.method) : ''} ${p.reference ? '· ' + esc(p.reference) : ''}</span>${admin && f.status !== 'anulada' ? `<button class="btn btn-secondary btn-sm" data-borrar-pago="${esc(p.id)}">Eliminar</button>` : ''}</div>`).join('') : '<span class="fx-muted">Sin pagos registrados.</span>'}
         ${puedePagar ? `<div class="fx-grid" style="margin-top:10px">${field('fxPMonto', 'Monto del abono', f.balance, 'number', 'min="0" step="0.01"')}${field('fxPFecha', 'Fecha', hoy(), 'date')}${field('fxPMetodo', 'Método', '', 'text', 'maxlength="100" placeholder="Zelle, transferencia…"')}${field('fxPRef', 'Referencia', '', 'text', 'maxlength="150"')}</div><div class="row" style="margin-top:8px"><button class="btn btn-primary btn-sm" id="fxPagar">Registrar abono</button></div>` : ''}
       </div>`,
-      `<button class="btn btn-secondary" id="modalCancel">Cerrar</button><button class="btn btn-secondary" id="fxPdf">Descargar PDF</button>${admin && f.status !== 'anulada' ? '<button class="btn btn-secondary" id="fxAnular">Anular factura</button>' : ''}`);
+      `<button class="btn btn-secondary" id="modalCancel">Cerrar</button><button class="btn btn-secondary" id="fxPdf">Descargar PDF</button>${admin && f.status !== 'anulada' ? '<button class="btn btn-secondary" id="fxWsp">Enviar por WhatsApp</button><button class="btn btn-secondary" id="fxAnular">Anular factura</button>' : ''}`);
     $('modalCancel').onclick = closeModal;
     $('fxPdf').onclick = () => descargarPdf(f.id, f.codigo);
+    $('fxWsp')?.addEventListener('click', async () => {
+      try {
+        const r = await api(`/api/facturas/${encodeURIComponent(f.id)}/enlace`, { method: 'POST' });
+        abrirWhatsapp(r.phone, r.message, f.clientPhone);
+      } catch (e) { aviso(e.message); }
+    });
     $('fxPagar')?.addEventListener('click', async () => {
       try {
         await api(`/api/facturas/${encodeURIComponent(f.id)}/pagos`, { method: 'POST', body: JSON.stringify({ amount: $('fxPMonto').value, date: $('fxPFecha').value, method: $('fxPMetodo').value, reference: $('fxPRef').value }) });
@@ -259,6 +265,77 @@
       if (!confirm(`¿Anular la factura ${f.codigo}? Sus etiquetas quedarán libres para volver a facturarse y su comisión se anula.`)) return;
       try { await api(`/api/facturas/${encodeURIComponent(f.id)}/anular`, { method: 'POST' }); closeModal(); aviso('Factura anulada'); if (currentView === 'billing') mostrarFacturacion(); } catch (e) { aviso(e.message); }
     });
+  }
+
+  /* =====================================================================================================
+     Cobranza: antigüedad de saldos
+     ===================================================================================================== */
+
+  let cobFiltroAsesor = '';
+  const COLOR_TRAMO = { '0-15': 'var(--green)', '16-30': 'var(--amber-d)', '31-60': 'var(--brick)', '61+': 'var(--brick)' };
+
+  /** Mismo criterio que el servidor: 0412-1234567 / 412-1234567 → 584121234567; respeta códigos de país ya escritos. */
+  function numeroWhatsapp(tel) {
+    let d = String(tel || '').replace(/\D/g, '').replace(/^00/, '');
+    if (!d) return null;
+    if (/^0[24]\d{9}$/.test(d)) d = `58${d.slice(1)}`;
+    else if (/^[24]\d{9}$/.test(d)) d = `58${d}`;
+    return d.length >= 11 && d.length <= 15 ? d : null;
+  }
+
+  async function mostrarCobranza() {
+    page().innerHTML = cargando('Cobranza');
+    const admin = isAdmin();
+    let d;
+    try { d = await api(`/api/cobranza${admin && cobFiltroAsesor ? `?asesora=${encodeURIComponent(cobFiltroAsesor)}` : ''}`); } catch (e) { if (alCambiar('collections')) page().innerHTML = fallo('Cobranza', e); return; }
+    if (!alCambiar('collections')) return;
+    const asesoras = db.users.filter((u) => u.role === 'asesora' && u.active);
+
+    const tramos = d.buckets.map((b) => `<div class="fx-kpi" style="border-top-color:${COLOR_TRAMO[b.id]}"><span>${esc(b.label)}</span><b style="color:${COLOR_TRAMO[b.id]}">${usd(b.balance)}</b><small>${b.invoices} factura(s)</small></div>`).join('');
+    const filas = d.byClient.map((c, i) => {
+      const color = c.oldestDays > 60 ? 'var(--brick)' : c.oldestDays > 30 ? 'var(--brick)' : c.oldestDays > 15 ? 'var(--amber-d)' : 'var(--green)';
+      return `<tr><td><span class="code-pill">${esc(c.clientCode || '—')}</span> <b>${esc(c.clientName)}</b>${c.clientPhone ? `<br><small class="fx-muted">${esc(c.clientPhone)}</small>` : ''}</td>
+        ${admin ? `<td>${esc(c.advisorName || '—')}</td>` : ''}
+        <td class="fx-num">${c.invoices.length}</td><td class="fx-num" style="color:${color};font-weight:700">${c.oldestDays} d</td><td class="fx-num"><b>${usd(c.balance)}</b></td>
+        <td><div class="fx-table-actions"><button class="btn btn-secondary btn-sm" data-cob-det="${i}">Facturas</button><button class="btn btn-secondary btn-sm" data-cob-rec="${i}">Recordatorio</button><button class="btn btn-secondary btn-sm" data-cob-wsp="${i}">WhatsApp</button></div></td></tr>
+        <tr id="cobDet${i}" hidden><td colspan="${admin ? 6 : 5}"><div class="fx-box" style="margin:0">${c.invoices.map((f) => `<div class="fx-rule-row"><span><span class="code-pill">${esc(f.code)}</span> ${esc(fecha(f.date))} · ${f.days} día(s) · total ${usd(f.total)}</span><span><b>${usd(f.balance)}</b> <button class="btn btn-secondary btn-sm" data-cob-fac="${esc(f.id)}">Ver</button></span></div>`).join('')}</div></td></tr>`;
+    }).join('');
+
+    page().innerHTML = `
+      <div class="page-head"><div><h1>Cobranza</h1><p>Saldos por cobrar según los días desde la fecha de la factura. Empieza por los clientes con más atraso.</p></div></div>
+      <div class="fx-kpis"><div class="fx-kpi"><span>Por cobrar</span><b>${usd(d.totals.balance)}</b><small>${d.totals.invoices} factura(s) · ${d.totals.clients} cliente(s)</small></div>${tramos}</div>
+      ${admin ? `<div class="fx-toolbar"><select id="cobAsesor" aria-label="Asesor"><option value="">Todos los asesores</option>${asesoras.map((u) => `<option value="${esc(u.id)}" ${cobFiltroAsesor === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></div>` : ''}
+      ${admin && d.byAdvisor.length > 1 ? `<div class="card section"><h3 style="margin-top:0">Por asesor</h3><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th>Asesor</th><th class="fx-num">Clientes con saldo</th><th class="fx-num">Mayor atraso</th><th class="fx-num">Por cobrar</th></tr></thead><tbody>${d.byAdvisor.map((a) => `<tr><td><b>${esc(a.advisorName)}</b></td><td class="fx-num">${a.clients}</td><td class="fx-num">${a.oldestDays} d</td><td class="fx-num"><b>${usd(a.balance)}</b></td></tr>`).join('')}</tbody></table></div></div>` : ''}
+      <div class="card section"><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th>Cliente</th>${admin ? '<th>Asesor</th>' : ''}<th class="fx-num">Facturas</th><th class="fx-num">Mayor atraso</th><th class="fx-num">Saldo</th><th></th></tr></thead><tbody>
+        ${filas || `<tr><td colspan="${admin ? 6 : 5}"><div class="empty compact">No hay saldos pendientes. 🎉</div></td></tr>`}</tbody></table></div></div>`;
+
+    $('cobAsesor')?.addEventListener('change', (e) => { cobFiltroAsesor = e.target.value; mostrarCobranza(); });
+    document.querySelectorAll('[data-cob-det]').forEach((b) => (b.onclick = () => { const f = $(`cobDet${b.dataset.cobDet}`); f.hidden = !f.hidden; }));
+    document.querySelectorAll('[data-cob-fac]').forEach((b) => (b.onclick = () => facturaDetalle(b.dataset.cobFac)));
+    document.querySelectorAll('[data-cob-rec]').forEach((b) => (b.onclick = () => {
+      const c = d.byClient[+b.dataset.cobRec];
+      if (typeof reminderModal !== 'function') return aviso('No se pudo abrir el recordatorio');
+      reminderModal({ title: `Cobrar a ${c.clientName} (${c.clientCode})`, advisorId: c.advisorId || me()?.id, clientId: c.clientId, dueAt: new Date(Date.now() + 86400000).toISOString(), notes: `Saldo pendiente ${usd(c.balance)} en ${c.invoices.length} factura(s): ${c.invoices.map((f) => f.code).join(', ')}. Mayor atraso: ${c.oldestDays} días.`, completed: false });
+    }));
+    document.querySelectorAll('[data-cob-wsp]').forEach((b) => (b.onclick = () => {
+      const c = d.byClient[+b.dataset.cobWsp];
+      const msg = `Hola ${c.clientName}, te escribimos de Criollo Cargo para recordarte que tienes un saldo pendiente de ${usd(c.balance)} (${c.invoices.map((f) => f.code).join(', ')}). ¿Podemos ayudarte con el pago?`;
+      abrirWhatsapp(numeroWhatsapp(c.clientPhone), msg, c.clientPhone);
+    }));
+  }
+
+  /** Abre WhatsApp con el mensaje listo; si el teléfono no sirve, pide uno. */
+  function abrirWhatsapp(numero, mensaje, telefonoOriginal = '') {
+    if (numero) { window.open(`https://wa.me/${numero}?text=${encodeURIComponent(mensaje)}`, '_blank', 'noopener'); return; }
+    openModal('Enviar por WhatsApp', `<p class="fx-muted">${telefonoOriginal ? `El teléfono «${esc(telefonoOriginal)}» no es válido para WhatsApp.` : 'Este cliente no tiene teléfono registrado.'} Escribe uno con código de país (por ejemplo 0412 1234567 o +58 412 1234567).</p>${field('wspNum', 'Teléfono', '', 'tel')}<div class="field"><label>Mensaje</label><textarea id="wspMsg" rows="5" style="width:100%">${esc(mensaje)}</textarea></div>`,
+      '<button class="btn btn-secondary" id="modalCancel">Cancelar</button><button class="btn btn-primary" id="wspAbrir">Abrir WhatsApp</button>');
+    $('modalCancel').onclick = closeModal;
+    $('wspAbrir').onclick = () => {
+      const n = numeroWhatsapp($('wspNum').value);
+      if (!n) return aviso('Ese teléfono no es válido');
+      window.open(`https://wa.me/${n}?text=${encodeURIComponent($('wspMsg').value)}`, '_blank', 'noopener');
+      closeModal();
+    };
   }
 
   /* =====================================================================================================
@@ -295,8 +372,8 @@
       ${datos.byClient.length ? datos.byClient.map((c) => `<tr><td><span class="code-pill">${esc(c.clientCode || '—')}</span> <b>${esc(c.clientName || 'Sin cliente')}</b></td><td class="fx-num">${c.invoices}</td><td class="fx-num">${usd(c.billed)}</td><td class="fx-num"><b>${usd(c.generated)}</b></td><td class="fx-num">${usd(c.pending)}</td><td class="fx-num">${usd(c.paid)}</td></tr>`).join('') : '<tr><td colspan="6"><div class="empty compact">Aún no hay comisiones generadas.</div></td></tr>'}
     </tbody></table></div></div>`;
 
-    const porAsesor = admin ? `<div class="card section"><h3 style="margin-top:0">Por asesor</h3><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th>Asesor</th><th class="fx-num">Generada</th><th class="fx-num">Pendiente</th><th class="fx-num">Pagada</th></tr></thead><tbody>
-      ${datos.byAdvisor.length ? datos.byAdvisor.map((a) => `<tr><td><b>${esc(a.advisorName)}</b></td><td class="fx-num">${usd(a.generated)}</td><td class="fx-num">${usd(a.pending)}</td><td class="fx-num">${usd(a.paid)}</td></tr>`).join('') : '<tr><td colspan="4"><div class="empty compact">Sin datos todavía.</div></td></tr>'}
+    const porAsesor = admin ? `<div class="card section"><h3 style="margin-top:0">Por asesor</h3><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th>Asesor</th><th class="fx-num">Generada</th><th class="fx-num">Pendiente</th><th class="fx-num">Pagada</th><th></th></tr></thead><tbody>
+      ${datos.byAdvisor.length ? datos.byAdvisor.map((a) => `<tr><td><b>${esc(a.advisorName)}</b></td><td class="fx-num">${usd(a.generated)}</td><td class="fx-num">${usd(a.pending)}</td><td class="fx-num">${usd(a.paid)}</td><td class="fx-num">${a.paid > 0 && a.advisorId ? `<button class="btn btn-secondary btn-sm" data-recibo="${esc(a.advisorId)}" data-nombre="${esc(a.advisorName)}">Recibo PDF</button>` : ''}</td></tr>`).join('') : '<tr><td colspan="5"><div class="empty compact">Sin datos todavía.</div></td></tr>'}
     </tbody></table></div></div>` : '';
 
     const reglasHtml = admin ? (() => {
@@ -308,7 +385,8 @@
         <div class="row" style="margin-top:10px"><button class="btn btn-secondary btn-sm" id="comRecalcular">Recalcular pendientes con las reglas actuales</button></div></div>`;
     })() : '';
 
-    const filtros = `<div class="fx-toolbar">${admin ? `<select id="comAsesor" aria-label="Asesor"><option value="">Todos los asesores</option>${asesoras.map((u) => `<option value="${esc(u.id)}" ${comFiltroAsesor === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>` : ''}
+    const miRecibo = !admin && t.paid > 0 ? '<div class="fx-toolbar"><button class="btn btn-secondary btn-sm" id="miRecibo">Descargar mi recibo de pagos (PDF)</button></div>' : '';
+    const filtros = `${miRecibo}<div class="fx-toolbar">${admin ? `<select id="comAsesor" aria-label="Asesor"><option value="">Todos los asesores</option>${asesoras.map((u) => `<option value="${esc(u.id)}" ${comFiltroAsesor === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>` : ''}
       <select id="comEstado" aria-label="Estado"><option value="">Todos los estados</option>${Object.entries(ESTADO_COM).map(([k, v]) => `<option value="${k}" ${comFiltroEstado === k ? 'selected' : ''}>${v[0]}</option>`).join('')}</select>
       ${admin ? '<button class="btn btn-primary btn-sm" id="comPagar">Marcar seleccionadas como pagadas</button>' : ''}</div>`;
 
@@ -318,6 +396,8 @@
 
     page().innerHTML = `<div class="page-head"><div><h1>Comisiones</h1><p>${admin ? 'Comisiones generadas por las facturas de cada asesor.' : 'Las comisiones que generan tus clientes.'}</p></div></div>${kpis}${reglaAsesor}${reglasHtml}${porCliente}${porAsesor}${filtros}${detalle}`;
 
+    document.querySelectorAll('[data-recibo]').forEach((b) => (b.onclick = () => reciboModal(b.dataset.recibo, b.dataset.nombre)));
+    $('miRecibo')?.addEventListener('click', () => reciboModal('', me()?.name || ''));
     $('comAsesor')?.addEventListener('change', (e) => { comFiltroAsesor = e.target.value; mostrarComisiones(); });
     $('comEstado')?.addEventListener('change', (e) => { comFiltroEstado = e.target.value; mostrarComisiones(); });
     document.querySelectorAll('[data-regla]').forEach((b) => (b.onclick = () => reglaModal(b.dataset.regla, reglas, asesoras)));
@@ -334,6 +414,29 @@
         try { const r = await api('/api/comisiones/pagar', { method: 'POST', body: JSON.stringify({ ids, date: $('comFechaPago').value }) }); closeModal(); aviso(`${r.paid} comisión(es) marcadas como pagadas`); mostrarComisiones(); } catch (e) { aviso(e.message); }
       };
     });
+  }
+
+  /** Recibo PDF de las comisiones PAGADAS de un asesor en un período (vacío = todas). */
+  function reciboModal(asesoraId, nombre) {
+    const d = new Date();
+    const inicioMes = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+    openModal(`Recibo de comisiones · ${esc(nombre)}`, `<p class="fx-muted">Incluye solo las comisiones ya marcadas como pagadas, con su fecha de pago dentro del período. Déjalo vacío para incluir todas.</p>
+      <div class="fx-grid">${field('rcDesde', 'Desde', inicioMes, 'date')}${field('rcHasta', 'Hasta', hoy(), 'date')}</div>`,
+      '<button class="btn btn-secondary" id="modalCancel">Cancelar</button><button class="btn btn-primary" id="rcDescargar">Descargar PDF</button>');
+    $('modalCancel').onclick = closeModal;
+    $('rcDescargar').onclick = async () => {
+      const q = new URLSearchParams();
+      if (asesoraId) q.set('asesora', asesoraId);
+      if ($('rcDesde').value) q.set('desde', $('rcDesde').value);
+      if ($('rcHasta').value) q.set('hasta', $('rcHasta').value);
+      try {
+        const url = URL.createObjectURL(await pedirArchivo(`/api/comisiones/recibo?${q}`));
+        const a = document.createElement('a');
+        a.href = url; a.download = `recibo-comisiones-${hoy()}.pdf`; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        closeModal();
+      } catch (e) { aviso(e.message); }
+    };
   }
 
   function reglaModal(asesoraId, reglas, asesoras) {
