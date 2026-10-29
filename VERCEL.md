@@ -49,3 +49,11 @@ Despliega y abre el dominio de Vercel: debe aparecer la pantalla de acceso. En *
 - **Conexiones a la base:** cada instancia usa un pool de 2. Por eso la cadena debe ser la del pooler (6543), no la directa.
 - **Límite de intentos de login:** se cuenta por instancia, no de forma global. Es una protección parcial; el bloqueo real contra fuerza bruta sería con un servicio externo.
 - **Dominio propio:** en *Settings → Domains*. Pon ese mismo dominio en `PUBLIC_URL`.
+## Si algo falla
+
+| Lo que ves | Qué significa |
+|---|---|
+| Al iniciar sesión: **«Configuración incompleta del servidor: faltan o no son válidas JWT_SECRET…»** | Falta esa variable (o `DATABASE_URL`) en el entorno de **este** despliegue, o `JWT_SECRET` mide menos de 32 caracteres. Defínela en *Settings → Environment Variables* para el entorno correcto (Production o Preview) y **redespliega**. |
+| **«El servidor no pudo arrancar. Revisa los registros…»** | La función cargó con configuración completa pero falló al iniciar. En *Deployments → Functions → Runtime Logs* aparece `❌ No se pudo cargar el servidor:` con el detalle. |
+| **«Servicio no disponible, intenta de nuevo»** (503) | No se pudo conectar a la base. Revisa `DATABASE_URL` (debe ser la del pooler, puerto 6543) y la contraseña. |
+| `FUNCTION_INVOCATION_FAILED` | Era lo que pasaba cuando faltaba una variable y la función se caía sin mensaje. Con esta versión ya no debería salir; si sale, la causa quedó en *Runtime Logs*. |

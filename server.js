@@ -48,7 +48,10 @@ function resolveJwtSecret() {
     console.error(`❌ JWT_SECRET es obligatorio en producción (mínimo ${MIN_SECRET_LENGTH} caracteres).`);
     // Diagnóstico sin revelar el valor: si llegó vacía, si es muy corta o si la variable está en otro entorno de Vercel.
     console.error(`   JWT_SECRET ${configured === undefined ? 'NO está definida en este despliegue' : `tiene ${configured.length} caracteres`}${process.env.VERCEL_ENV ? ` · entorno de Vercel: ${process.env.VERCEL_ENV}` : ''}${configured !== undefined && configured !== configured.trim() ? ' · lleva espacios al inicio o al final' : ''}.`);
-    if (process.env.VERCEL) console.error('   En Vercel: Settings → Environment Variables → la variable debe incluir el entorno de este despliegue (Production o Preview) y hay que redesplegar después de cambiarla.');
+    if (process.env.VERCEL) {
+      console.error('   En Vercel: Settings → Environment Variables → la variable debe incluir el entorno de este despliegue (Production o Preview) y hay que redesplegar después de cambiarla.');
+      throw new Error('JWT_SECRET es obligatoria en producción (mínimo 32 caracteres)'); // api/index.js lo convierte en un mensaje claro
+    }
     process.exit(1);
   }
   console.warn('⚠️ JWT_SECRET no definido: se usa un secreto temporal (las sesiones se cierran al reiniciar).');
