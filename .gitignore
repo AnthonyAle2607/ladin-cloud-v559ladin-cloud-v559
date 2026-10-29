@@ -24,3 +24,9 @@ scratch/
 Thumbs.db
 .vscode/
 .idea/
+
+# Volcado de datos local (contiene hashes de usuarios)
+ladin_cloud_dump.json
+backups/
+uploads/quejas/*
+!uploads/quejas/.gitkeep

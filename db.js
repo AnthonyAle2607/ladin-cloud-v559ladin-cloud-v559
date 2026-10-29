@@ -12,7 +12,7 @@ const pgPool = new Pool({
   user: process.env.PGUSER || 'postgres',
   host: process.env.PGHOST || 'localhost',
   database: process.env.PGDATABASE || 'Ladin cloud',
-  password: process.env.PGPASSWORD || 'Ladin.0314',
+  password: process.env.PGPASSWORD,
   port: Number(process.env.PGPORT || 5432),
   connectionTimeoutMillis: 2000
 });
