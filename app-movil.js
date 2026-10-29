@@ -6,13 +6,11 @@
  * - /api/clientes/:id/clave, /api/etiquetas/:id/lotes y /fotos : lo que usa el personal para alimentar la app.
  * Cada consulta de /api/app filtra por el cliente de la sesión: nadie ve etiquetas ajenas.
  */
-const fs = require('fs');
-const path = require('path');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
+const almacen = require('./almacen');
 
-const FOTOS_DIR = path.join(__dirname, 'uploads', 'etiquetas');
 const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
 const MIN_CLAVE = 8;
 const TIPOS_AVISO = ['almacen', 'transito', 'puerto', 'fotos'];
@@ -71,6 +69,7 @@ async function ensureSchema(db) {
   await db.query('ALTER TABLE clientes ADD COLUMN IF NOT EXISTS clave_hash TEXT');
   await db.query('CREATE TABLE IF NOT EXISTS etiqueta_lotes (id SERIAL PRIMARY KEY, etiqueta_id INTEGER NOT NULL, nombre VARCHAR(80) NOT NULL, cajas INTEGER NOT NULL, kg_por_caja NUMERIC(10,2) NOT NULL, largo_cm NUMERIC(10,2), ancho_cm NUMERIC(10,2), alto_cm NUMERIC(10,2))');
   await db.query('CREATE TABLE IF NOT EXISTS etiqueta_fotos (id SERIAL PRIMARY KEY, etiqueta_id INTEGER NOT NULL, titulo VARCHAR(120), lugar VARCHAR(120), nombre_guardado VARCHAR(255) NOT NULL, mime_type VARCHAR(100) NOT NULL, creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)');
+  await db.query("ALTER TABLE etiqueta_fotos ADD COLUMN IF NOT EXISTS almacen VARCHAR(10) NOT NULL DEFAULT 'disco'");
   await db.query('CREATE TABLE IF NOT EXISTS cliente_preferencias (cliente_id INTEGER PRIMARY KEY, almacen BOOLEAN NOT NULL DEFAULT TRUE, transito BOOLEAN NOT NULL DEFAULT TRUE, puerto BOOLEAN NOT NULL DEFAULT TRUE, fotos BOOLEAN NOT NULL DEFAULT FALSE)');
   await db.query('CREATE TABLE IF NOT EXISTS cliente_dispositivos (id SERIAL PRIMARY KEY, cliente_id INTEGER NOT NULL, push_token VARCHAR(255) NOT NULL UNIQUE, plataforma VARCHAR(20), creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)');
   await db.query('CREATE TABLE IF NOT EXISTS cliente_avisos (id SERIAL PRIMARY KEY, cliente_id INTEGER NOT NULL, etiqueta_id INTEGER, titulo VARCHAR(200) NOT NULL, cuerpo TEXT NOT NULL, creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)');
@@ -137,8 +136,26 @@ const subirFotos = multer({
 
 /* ---------- rutas ---------- */
 
+/** Fotos de las etiquetas dadas, para borrar sus archivos DESPUÉS de borrar las filas (las filas caen en cascada). */
+async function fotosDeEtiquetas(db, ids) {
+  const lista = (ids || []).filter((x) => Number.isInteger(Number(x))).map(Number);
+  if (!lista.length) return [];
+  return (await db.query('SELECT almacen,nombre_guardado FROM etiqueta_fotos WHERE etiqueta_id = ANY($1::int[])', [lista])).rows;
+}
+
+async function fotosDeCliente(db, clienteId) {
+  return (await db.query('SELECT f.almacen,f.nombre_guardado FROM etiqueta_fotos f JOIN etiquetas e ON e.id=f.etiqueta_id WHERE e.cliente_id=$1', [clienteId])).rows;
+}
+
 function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }) {
-  fs.mkdirSync(FOTOS_DIR, { recursive: true });
+  if (almacen.hayStorage()) {
+    almacen.asegurarBucket().then(
+      () => console.log(`🗂️  Fotos de etiquetas en Supabase Storage (bucket ${almacen.BUCKET}).`),
+      (e) => console.error('⚠️', e.message)
+    );
+  } else {
+    console.log('🗂️  Fotos de etiquetas en disco local (define SUPABASE_URL y SUPABASE_SECRET_KEY para usar Supabase Storage).');
+  }
 
   async function authCliente(req, res, next) {
     try {
@@ -253,13 +270,13 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
   app.get('/api/app/fotos/:id', authCliente, async (req, res) => {
     try {
       const id = intId(req.params.id);
-      const r = await db.query('SELECT f.nombre_guardado,f.mime_type FROM etiqueta_fotos f JOIN etiquetas e ON e.id=f.etiqueta_id WHERE f.id=$1 AND e.cliente_id=$2', [id, req.cliente.id]);
+      const r = await db.query('SELECT f.nombre_guardado,f.mime_type,f.almacen FROM etiqueta_fotos f JOIN etiquetas e ON e.id=f.etiqueta_id WHERE f.id=$1 AND e.cliente_id=$2', [id, req.cliente.id]);
       if (!r.rows.length) return res.status(404).json({ error: 'Foto no encontrada' });
-      const archivo = path.join(FOTOS_DIR, path.basename(r.rows[0].nombre_guardado));
-      if (!fs.existsSync(archivo)) return res.status(404).json({ error: 'Foto no encontrada' });
+      const contenido = await almacen.leer(r.rows[0].almacen, r.rows[0].nombre_guardado);
+      if (!contenido) return res.status(404).json({ error: 'Foto no encontrada' });
       res.setHeader('Content-Type', r.rows[0].mime_type);
       res.setHeader('Cache-Control', 'private, max-age=3600');
-      res.sendFile(archivo);
+      res.send(contenido);
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: 'No se pudo cargar la foto' });
@@ -380,9 +397,9 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
       for (const f of archivos) {
         const tipo = tipoDeImagen(f.buffer); // se confía en los bytes, no en el nombre ni en el tipo declarado
         if (!tipo) continue;
-        const nombre = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${tipo.ext}`;
-        fs.writeFileSync(path.join(FOTOS_DIR, nombre), f.buffer);
-        await db.query('INSERT INTO etiqueta_fotos(etiqueta_id,titulo,lugar,nombre_guardado,mime_type) VALUES($1,$2,$3,$4,$5)', [e.id, titulo, lugar, nombre, tipo.mime]);
+        const nombre = `e${e.id}/${Date.now()}_${Math.random().toString(36).slice(2, 10)}${tipo.ext}`;
+        const guardado = await almacen.guardar(nombre, f.buffer, tipo.mime);
+        await db.query('INSERT INTO etiqueta_fotos(etiqueta_id,titulo,lugar,nombre_guardado,mime_type,almacen) VALUES($1,$2,$3,$4,$5,$6)', [e.id, titulo, lugar, guardado.clave, tipo.mime, guardado.almacen]);
         guardadas++;
       }
       if (!guardadas) return res.status(400).json({ error: 'Los archivos no son fotos JPG o PNG válidas' });
@@ -399,10 +416,10 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
     try {
       const e = await etiquetaPermitida(req, res);
       if (!e) return;
-      const f = await db.query('SELECT id,nombre_guardado FROM etiqueta_fotos WHERE id=$1 AND etiqueta_id=$2', [intId(req.params.fotoId), e.id]);
+      const f = await db.query('SELECT id,nombre_guardado,almacen FROM etiqueta_fotos WHERE id=$1 AND etiqueta_id=$2', [intId(req.params.fotoId), e.id]);
       if (!f.rows.length) return res.status(404).json({ error: 'Foto no encontrada' });
       await db.query('DELETE FROM etiqueta_fotos WHERE id=$1', [f.rows[0].id]);
-      fs.rmSync(path.join(FOTOS_DIR, path.basename(f.rows[0].nombre_guardado)), { force: true });
+      await almacen.borrar([f.rows[0]]);
       res.json({ ok: true });
     } catch (e) {
       console.error(e);
@@ -411,4 +428,4 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
   });
 }
 
-module.exports = { ensureSchema, registrar, avisarCambioDeEstado, estadoApp };
+module.exports = { ensureSchema, registrar, avisarCambioDeEstado, estadoApp, fotosDeEtiquetas, fotosDeCliente, borrarArchivos: almacen.borrar };

@@ -618,12 +618,14 @@ app.delete('/api/clientes/:id', auth, async (req, res) => {
     const old = await db.query('SELECT id,nombre,apellido,codigo_cliente FROM clientes WHERE id=$1', [id]);
     if (!old.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
 
+    const fotos = await appMovil.fotosDeCliente(db, id); // los archivos se borran después; las filas caen en cascada
     tx = await db.connect();
     await tx.query('BEGIN');
     await tx.query('DELETE FROM etiquetas WHERE etiqueta_padre_id IN (SELECT id FROM etiquetas WHERE cliente_id=$1)', [id]);
     await tx.query('DELETE FROM etiquetas WHERE cliente_id=$1', [id]);
     await tx.query('DELETE FROM clientes WHERE id=$1', [id]);
     await tx.query('COMMIT');
+    await appMovil.borrarArchivos(fotos);
 
     await logAction(req.user.id, `Cliente ${old.rows[0].nombre} eliminado`, 'clientes', id, `Se eliminó el cliente ${old.rows[0].codigo_cliente || ''}.`);
     res.json({ ok: true, deletedId: pref('c', id) });
@@ -867,6 +869,9 @@ app.delete('/api/etiquetas/:id', auth, async (req, res) => {
     if (!old.rows.length) return res.status(404).json({ error: 'Etiqueta no encontrada' });
     if (req.user.rol !== 'admin' && old.rows[0].asesora_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso para eliminar esta etiqueta' });
 
+    const hijas = await db.query('SELECT id FROM etiquetas WHERE etiqueta_padre_id=$1', [id]);
+    const fotos = await appMovil.fotosDeEtiquetas(db, [id, ...hijas.rows.map(h => h.id)]); // archivos a borrar tras el COMMIT
+
     if (client) await client.query('BEGIN');
     const q = (text, params) => client ? client.query(text, params) : db.query(text, params);
     const parentId = old.rows[0].etiqueta_padre_id;
@@ -884,6 +889,7 @@ app.delete('/api/etiquetas/:id', auth, async (req, res) => {
       await q('UPDATE etiquetas SET tiene_subetiquetas=EXISTS(SELECT 1 FROM etiquetas x WHERE x.etiqueta_padre_id=$1) WHERE id=$1', [parentId]);
     }
     if (client) await client.query('COMMIT');
+    await appMovil.borrarArchivos(fotos);
 
     await logAction(req.user.id, `Etiqueta ${old.rows[0].numero} eliminada`, 'etiquetas', id, `Se eliminó la etiqueta.`);
     res.json({ ok: true, deleted: deletedNumbers.length + 1 });

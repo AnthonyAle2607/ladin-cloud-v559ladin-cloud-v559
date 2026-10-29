@@ -9,6 +9,8 @@ No usa Supabase Auth ni la API REST, por eso todas las tablas quedan cerradas a 
 | Archivo | Para qué |
 |---|---|
 | `migrations/20261029000000_esquema_inicial.sql` | 14 tablas con llaves foráneas, índices, RLS y el bucket privado `etiquetas-fotos`. Se puede aplicar varias veces. |
+| `migrations/20261029000100_fotos_almacen.sql` | Columna `etiqueta_fotos.almacen` (`disco` o `supabase`). Aplicar después de la anterior. |
+| `../almacen.js`, `../scripts/subir-fotos-a-storage.js` | Guardar, leer y borrar fotos en Storage; y pasar las que siguen en disco. |
 | `../scripts/migrar-a-supabase.js` | Copia los datos de la base local (SQLite o Postgres) a Supabase conservando los `id`. |
 | `../db.js` | Acepta `DATABASE_URL` + SSL y, con ella, **no cae a SQLite** si Supabase no responde. |
 
@@ -36,7 +38,8 @@ Llaves foráneas: borrar un cliente borra sus etiquetas (y de ahí lotes y fotos
 
 ## Cosas que conviene saber
 
-- **Fotos**: las tablas guardan el nombre del archivo, pero el servidor todavía escribe las fotos en `uploads/etiquetas/` (disco del contenedor). En un contenedor sin disco persistente se pierden al redesplegar. El bucket privado `etiquetas-fotos` ya está creado para el siguiente paso: subir y servir las fotos desde Supabase Storage (cambio en `app-movil.js`).
+- **Fotos (Supabase Storage)**: con `SUPABASE_URL` y `SUPABASE_SECRET_KEY` en el entorno, las fotos nuevas van al bucket privado `etiquetas-fotos` (el servidor lo crea al arrancar si falta) y la app las recibe **a través del servidor**, con la sesión del cliente; ni la app ni el navegador hablan con Storage. Sin esas variables se guardan en `uploads/etiquetas/` (solo desarrollo). Cada foto recuerda su almacén (`etiqueta_fotos.almacen`), así que las viejas en disco siguen sirviéndose; para pasarlas: `node scripts/subir-fotos-a-storage.js` (simulacro) y `--aplicar`. Al borrar una etiqueta, un cliente o una foto, también se borra el archivo de Storage.
+- **Clave secreta**: `SUPABASE_SECRET_KEY` salta todas las reglas de acceso. Solo en el entorno del servidor (Easypanel / `.env`), nunca en el código, en la app móvil ni en el repositorio. La `publishable` no se usa en este servidor.
 - **Esquema al arrancar**: `ensureSchema()` del servidor sigue ejecutándose, pero con el esquema ya aplicado no cambia nada. Los cambios nuevos de esquema deben ir como archivos nuevos en `migrations/`.
 - **Horas**: las columnas son `timestamp` sin zona, igual que hoy; Supabase corre en UTC. Las horas de recordatorios se guardan tal como llegan del navegador.
 - **Copias de seguridad**: Supabase hace copias diarias en los planes de pago; en el plan gratuito no hay. La copia en CSV del sistema (*Copia de seguridad*) sigue funcionando.
