@@ -30,3 +30,6 @@ ladin_cloud_dump.json
 backups/
 uploads/quejas/*
 !uploads/quejas/.gitkeep
+
+uploads/etiquetas/*
+!uploads/etiquetas/.gitkeep

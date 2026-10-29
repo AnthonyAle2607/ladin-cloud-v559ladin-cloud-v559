@@ -22,6 +22,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const PDFDocument = require('pdfkit');
 const db = require('./db');
+const appMovil = require('./app-movil');
 
 const execFileAsync = promisify(execFile);
 const UPLOAD_ROOT = path.join(__dirname, 'uploads', 'quejas');
@@ -390,6 +391,9 @@ async function ensureSchema() {
   // Actualizaciones de códigos por defecto
   await db.query("UPDATE usuarios SET codigo_asesora = 'ASE-' || LPAD(id::text, 3, '0') WHERE rol='asesora' AND (codigo_asesora IS NULL OR BTRIM(codigo_asesora)='')");
   await db.query("UPDATE clientes SET codigo_cliente = 'LC-CLI-' || LPAD(id::text, 6, '0') WHERE codigo_cliente IS NULL OR BTRIM(codigo_cliente) = ''");
+
+  // 6. App móvil de clientes (accesos, lotes, fotos, avisos)
+  await appMovil.ensureSchema(db);
 }
 
 async function seed() {
@@ -614,12 +618,14 @@ app.delete('/api/clientes/:id', auth, async (req, res) => {
     const old = await db.query('SELECT id,nombre,apellido,codigo_cliente FROM clientes WHERE id=$1', [id]);
     if (!old.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
 
+    const fotos = await appMovil.fotosDeCliente(db, id); // los archivos se borran después; las filas caen en cascada
     tx = await db.connect();
     await tx.query('BEGIN');
     await tx.query('DELETE FROM etiquetas WHERE etiqueta_padre_id IN (SELECT id FROM etiquetas WHERE cliente_id=$1)', [id]);
     await tx.query('DELETE FROM etiquetas WHERE cliente_id=$1', [id]);
     await tx.query('DELETE FROM clientes WHERE id=$1', [id]);
     await tx.query('COMMIT');
+    await appMovil.borrarArchivos(fotos);
 
     await logAction(req.user.id, `Cliente ${old.rows[0].nombre} eliminado`, 'clientes', id, `Se eliminó el cliente ${old.rows[0].codigo_cliente || ''}.`);
     res.json({ ok: true, deletedId: pref('c', id) });
@@ -845,6 +851,7 @@ app.put('/api/etiquetas/:id', auth, async (req, res) => {
     );
 
     await logAction(req.user.id, `Etiqueta ${labelNumber} actualizada`, 'etiquetas', id, `Se actualizó la etiqueta.`);
+    await appMovil.avisarCambioDeEstado(db, old, r.rows[0]); // avisa al cliente solo si cambió lo que ve en la app
     res.json(labelOut(r.rows[0]));
   } catch (e) {
     console.error(e);
@@ -861,6 +868,9 @@ app.delete('/api/etiquetas/:id', auth, async (req, res) => {
     const old = await db.query(`SELECT e.id,e.numero,e.etiqueta_padre_id,e.cliente_id,c.asesora_id FROM etiquetas e LEFT JOIN clientes c ON c.id=e.cliente_id WHERE e.id=$1`, [id]);
     if (!old.rows.length) return res.status(404).json({ error: 'Etiqueta no encontrada' });
     if (req.user.rol !== 'admin' && old.rows[0].asesora_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso para eliminar esta etiqueta' });
+
+    const hijas = await db.query('SELECT id FROM etiquetas WHERE etiqueta_padre_id=$1', [id]);
+    const fotos = await appMovil.fotosDeEtiquetas(db, [id, ...hijas.rows.map(h => h.id)]); // archivos a borrar tras el COMMIT
 
     if (client) await client.query('BEGIN');
     const q = (text, params) => client ? client.query(text, params) : db.query(text, params);
@@ -879,6 +889,7 @@ app.delete('/api/etiquetas/:id', auth, async (req, res) => {
       await q('UPDATE etiquetas SET tiene_subetiquetas=EXISTS(SELECT 1 FROM etiquetas x WHERE x.etiqueta_padre_id=$1) WHERE id=$1', [parentId]);
     }
     if (client) await client.query('COMMIT');
+    await appMovil.borrarArchivos(fotos);
 
     await logAction(req.user.id, `Etiqueta ${old.rows[0].numero} eliminada`, 'etiquetas', id, `Se eliminó la etiqueta.`);
     res.json({ ok: true, deleted: deletedNumbers.length + 1 });
@@ -1144,6 +1155,12 @@ app.get('/api/admin/backup-csv.zip', auth, async (req, res) => {
     if (!res.headersSent) res.status(500).json({ error: 'No se pudo generar la copia' });
   }
 });
+
+/* ==========================================================================
+   APP MÓVIL DE CLIENTES (/api/app/*) Y RUTAS DEL PERSONAL QUE LA ALIMENTAN
+   ========================================================================== */
+
+appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction });
 
 /* ==========================================================================
    CATCH-ALL / SERVIR APLICACIÓN FRONTEND

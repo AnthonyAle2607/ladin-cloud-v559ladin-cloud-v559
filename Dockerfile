@@ -14,7 +14,7 @@ RUN npm install --production
 COPY . .
 
 # Crear directorios para uploads y persistencia
-RUN mkdir -p uploads/quejas backups
+RUN mkdir -p uploads/quejas uploads/etiquetas backups
 
 # Exponer el puerto de la aplicación
 EXPOSE 3000
