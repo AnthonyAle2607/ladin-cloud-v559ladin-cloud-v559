@@ -8,14 +8,29 @@ const fs = require('fs');
 let useSQLite = false;
 let sqliteDb = null;
 
-const pgPool = new Pool({
-  user: process.env.PGUSER || 'postgres',
-  host: process.env.PGHOST || 'localhost',
-  database: process.env.PGDATABASE || 'Ladin cloud',
-  password: process.env.PGPASSWORD,
-  port: Number(process.env.PGPORT || 5432),
-  connectionTimeoutMillis: 2000
-});
+// Con DATABASE_URL (Supabase u otro Postgres remoto) la base es obligatoria: si no responde, el servidor falla en voz alta
+// en vez de caer a SQLite y guardar datos en un archivo local que nadie ve. REQUIERE_POSTGRES=1 pide lo mismo sin DATABASE_URL.
+// Sin ninguna de las dos todo funciona como antes (Postgres local si responde, SQLite si no).
+const REQUIERE_POSTGRES = Boolean(process.env.DATABASE_URL) || process.env.REQUIERE_POSTGRES === '1';
+
+/** SSL para Postgres remoto. Con PGSSL_CA (ruta al certificado de Supabase) se verifica el servidor; sin ella se cifra sin verificar. */
+function opcionesSsl() {
+  if (process.env.PGSSL === 'off' || (!process.env.DATABASE_URL && !process.env.DATABASE_URL_DESTINO && !process.env.PGSSL_CA)) return undefined;
+  if (process.env.PGSSL_CA) return { ca: fs.readFileSync(process.env.PGSSL_CA, 'utf8'), rejectUnauthorized: true };
+  return { rejectUnauthorized: false };
+}
+
+const pgPool = new Pool(process.env.DATABASE_URL
+  ? { connectionString: process.env.DATABASE_URL, ssl: opcionesSsl(), max: Number(process.env.PGPOOL_MAX || 10), connectionTimeoutMillis: 10000 }
+  : {
+      user: process.env.PGUSER || 'postgres',
+      host: process.env.PGHOST || 'localhost',
+      database: process.env.PGDATABASE || 'Ladin cloud',
+      password: process.env.PGPASSWORD,
+      port: Number(process.env.PGPORT || 5432),
+      ssl: opcionesSsl(),
+      connectionTimeoutMillis: 2000
+    });
 
 pgPool.on('error', (err) => {
   if (!useSQLite) console.error('PostgreSQL pool error:', err.message);
@@ -77,6 +92,7 @@ async function testConnection() {
     console.log('✅ Conexión con PostgreSQL establecida exitosamente.');
     return true;
   } catch (err) {
+    if (REQUIERE_POSTGRES) throw new Error(`No se pudo conectar a PostgreSQL (${err.message}). No se usa SQLite en este modo.`);
     console.log(`⚠️ PostgreSQL no disponible en puerto ${process.env.PGPORT || 5432} (${err.message}).`);
     console.log('🔄 Activando motor de base de datos local persistente SQLite...');
     useSQLite = true;
@@ -99,7 +115,7 @@ const db = {
       try {
         return await pgPool.query(text, params);
       } catch (e) {
-        if (e.code === 'ECONNREFUSED' || e.code === '57P01') {
+        if (!REQUIERE_POSTGRES && (e.code === 'ECONNREFUSED' || e.code === '57P01')) {
           console.log('⚠️ Conexión con PostgreSQL interrumpida. Conmutando a SQLite...');
           useSQLite = true;
           if (!sqliteDb) initSqlite();
@@ -154,7 +170,7 @@ const db = {
         const client = await pgPool.connect();
         return client;
       } catch (e) {
-        if (e.code === 'ECONNREFUSED') {
+        if (e.code === 'ECONNREFUSED' && !REQUIERE_POSTGRES) {
           useSQLite = true;
           if (!sqliteDb) initSqlite();
         } else throw e;
@@ -171,7 +187,8 @@ const db = {
     if (!useSQLite) pgPool.on(event, handler);
   },
 
-  initCheck: testConnection
+  initCheck: testConnection,
+  opcionesSsl
 };
 
 module.exports = db;
