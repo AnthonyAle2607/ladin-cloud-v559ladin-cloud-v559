@@ -550,6 +550,21 @@
     } catch (e) { aviso(e.message); }
   }
 
+  /** Reduce una foto a 1600 px y JPEG al 82 %: en Vercel el cuerpo de una solicitud no puede pasar de 4.5 MB y las fotos del teléfono pesan más. */
+  async function comprimirImagen(file) {
+    if (!/^image\/(jpeg|png)$/.test(file.type) || file.size < 700 * 1024) return file;
+    try {
+      const bmp = await createImageBitmap(file);
+      const escala = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+      const lienzo = document.createElement('canvas');
+      lienzo.width = Math.round(bmp.width * escala); lienzo.height = Math.round(bmp.height * escala);
+      lienzo.getContext('2d').drawImage(bmp, 0, 0, lienzo.width, lienzo.height);
+      const blob = await new Promise((r) => lienzo.toBlob(r, 'image/jpeg', 0.82));
+      if (!blob || blob.size >= file.size) return file;
+      return new File([blob], `${file.name.replace(/\.\w+$/, '')}.jpg`, { type: 'image/jpeg' });
+    } catch (_) { return file; }
+  }
+
   /** POST multipart con la sesión (api() fija Content-Type JSON, que rompe los formularios con archivo). */
   async function enviar(ruta, formData) {
     const r = await fetch(ruta, { method: 'POST', headers: { Authorization: `Bearer ${session.token}` }, body: formData });
@@ -625,7 +640,9 @@
         const files = $('fxFotoArchivos').files;
         if (!files.length) return aviso('Elige al menos una foto');
         const f = new FormData(); f.append('titulo', $('fxFotoTitulo').value); f.append('lugar', $('fxFotoLugar').value);
-        [...files].forEach((x) => f.append('fotos', x));
+        let total = 0;
+        for (const x of files) { const c = await comprimirImagen(x); total += c.size; f.append('fotos', c); }
+        if (total > 4 * 1024 * 1024) return aviso('Las fotos pesan demasiado juntas (máximo 4 MB por envío). Sube menos fotos a la vez.');
         try { const r = await enviar(`/api/etiquetas/${encodeURIComponent(etq.id)}/fotos`, f); aviso(`${r.guardadas} foto(s) subidas; el cliente recibe el aviso si lo activó`); cargarAppEtiqueta(etq); } catch (e) { aviso(e.message); }
       };
       document.querySelectorAll('#fxApp [data-borrar-foto]').forEach((b) => (b.onclick = async () => {

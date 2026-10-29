@@ -28,7 +28,9 @@ const importador = require('./importador');
 
 const execFileAsync = promisify(execFile);
 const UPLOAD_ROOT = path.join(__dirname, 'uploads', 'quejas');
-fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
+const almacenes = require('./almacen');
+// En Vercel el disco es de solo lectura: los adjuntos van a Supabase Storage y esta carpeta no hace falta.
+try { fs.mkdirSync(UPLOAD_ROOT, { recursive: true }); } catch (e) { if (!process.env.VERCEL) throw e; }
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -53,7 +55,7 @@ function resolveJwtSecret() {
 const JWT_SECRET = resolveJwtSecret();
 
 // Detrás del proxy de Easypanel, la IP real del cliente viene en X-Forwarded-For.
-if (IS_PRODUCTION) app.set('trust proxy', 1);
+if (IS_PRODUCTION || process.env.VERCEL) app.set('trust proxy', 1);
 
 // Sin CORS_ORIGIN la app solo responde a su propio origen (frontend servido por este mismo servidor).
 const corsOrigins = (process.env.CORS_ORIGIN || '').split(',').map(o => o.trim()).filter(Boolean);
@@ -395,6 +397,8 @@ async function ensureSchema() {
   // Actualizaciones de códigos por defecto
   await db.query("UPDATE usuarios SET codigo_asesora = 'ASE-' || LPAD(id::text, 3, '0') WHERE rol='asesora' AND (codigo_asesora IS NULL OR BTRIM(codigo_asesora)='')");
   await db.query("UPDATE clientes SET codigo_cliente = 'LC-CLI-' || LPAD(id::text, 6, '0') WHERE codigo_cliente IS NULL OR BTRIM(codigo_cliente) = ''");
+
+  await db.query("ALTER TABLE queja_archivos ADD COLUMN IF NOT EXISTS almacen VARCHAR(10) NOT NULL DEFAULT 'disco'"); // disco | supabase
 
   // 6. App móvil de clientes (accesos, lotes, fotos, avisos)
   await appMovil.ensureSchema(db);
@@ -952,17 +956,16 @@ app.post('/api/quejas', auth, complaintUpload.array('files', 15), async (req, re
     );
 
     const complaintId = Number(r.rows[0].id);
-    const dir = path.join(UPLOAD_ROOT, pref('q', complaintId));
-    fs.mkdirSync(dir, { recursive: true });
-
     const files = Array.isArray(req.files) ? req.files : [];
     if (files.length) {
       for (const f of files) {
         const ext = path.extname(String(f.originalname || '')).toLowerCase().replace(/[^a-z0-9.]/g, '');
         const stored = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${ext}`;
-        fs.writeFileSync(path.join(dir, stored), f.buffer);
-        await db.query('INSERT INTO queja_archivos(queja_id,nombre_original,nombre_guardado,mime_type,tamano) VALUES($1,$2,$3,$4,$5)', [
-          complaintId, f.originalname, stored, f.mimetype, f.size
+        const guardado = await almacenes.quejas.guardar(`${pref('q', complaintId)}/${stored}`, f.buffer, f.mimetype);
+        // multer entrega el nombre como latin1: «evidencia ñandú.png» llegaría como «evidencia Ã±andÃº.png».
+        const nombreOriginal = Buffer.from(String(f.originalname || ''), 'latin1').toString('utf8').slice(0, 255);
+        await db.query('INSERT INTO queja_archivos(queja_id,nombre_original,nombre_guardado,mime_type,tamano,almacen) VALUES($1,$2,$3,$4,$5,$6)', [
+          complaintId, nombreOriginal, guardado.clave, f.mimetype, f.size, guardado.almacen
         ]);
       }
     }
@@ -974,6 +977,28 @@ app.post('/api/quejas', auth, complaintUpload.array('files', 15), async (req, re
     console.error(e);
     res.status(500).json({ error: e.message || 'No se pudo registrar la incidencia' });
   }
+});
+
+/** Descarga de un adjunto de incidencia (la web ya llamaba a esta ruta y no existía). Solo el administrador o quien la registró. */
+app.get('/api/quejas/:id/archivos/:fileId', auth, async (req, res) => {
+  try {
+    const qid = intId(req.params.id);
+    const q = (await db.query('SELECT id,usuario_id FROM quejas WHERE id=$1', [qid])).rows[0];
+    if (!q) return res.status(404).json({ error: 'Incidencia no encontrada' });
+    if (req.user.rol !== 'admin' && q.usuario_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso' });
+    const f = (await db.query('SELECT nombre_original,nombre_guardado,mime_type,almacen FROM queja_archivos WHERE id=$1 AND queja_id=$2', [intId(req.params.fileId), qid])).rows[0];
+    if (!f) return res.status(404).json({ error: 'Archivo no encontrado' });
+    let contenido = await almacenes.quejas.leer(f.almacen || 'disco', f.nombre_guardado);
+    if (!contenido && (f.almacen || 'disco') === 'disco') { // archivos anteriores: uploads/quejas/q<id>/<archivo>
+      const viejo = path.join(UPLOAD_ROOT, pref('q', qid), path.basename(f.nombre_guardado));
+      if (fs.existsSync(viejo)) contenido = fs.readFileSync(viejo);
+    }
+    if (!contenido) return res.status(404).json({ error: 'Archivo no encontrado' });
+    res.setHeader('Content-Type', f.mime_type || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(f.nombre_original || 'archivo')}`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(contenido);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo descargar el archivo' }); }
 });
 
 app.get('/api/quejas', auth, async (req, res) => {
@@ -1216,7 +1241,26 @@ function getLocalIpAddresses() {
   return addresses;
 }
 
-seed()
+if (process.env.VERCEL) {
+  // Vercel: funciones sin servidor, sin listen. Cada instancia se prepara una sola vez (conexión + administrador inicial).
+  // El esquema se aplica con supabase/migrations, no al arrancar (FORCE_SCHEMA=1 lo fuerza, solo para pruebas locales).
+  let listo = null;
+  const preparar = async () => {
+    if (typeof db.initCheck === 'function') await db.initCheck();
+    if (process.env.FORCE_SCHEMA === '1') await ensureSchema();
+    await ensureAdminUser();
+  };
+  module.exports = async (req, res) => {
+    try {
+      await (listo || (listo = preparar()));
+    } catch (e) {
+      listo = null; // la próxima solicitud lo intenta de nuevo
+      console.error('No se pudo preparar la instancia:', e.message);
+      return res.status(503).json({ error: 'Servicio no disponible, intenta de nuevo en unos segundos' });
+    }
+    return app(req, res);
+  };
+} else seed()
   .then(() => {
     app.listen(PORT, '0.0.0.0', () => {
       const localIps = getLocalIpAddresses();

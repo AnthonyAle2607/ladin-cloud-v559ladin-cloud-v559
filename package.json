@@ -4,6 +4,9 @@
   "private": true,
   "description": "Servidor local de Ladin Cloud",
   "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"

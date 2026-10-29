@@ -150,10 +150,13 @@ async function fotosDeCliente(db, clienteId) {
 
 function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }) {
   if (almacen.hayStorage()) {
-    almacen.asegurarBucket().then(
-      () => console.log(`🗂️  Fotos de etiquetas en Supabase Storage (bucket ${almacen.BUCKET}).`),
-      (e) => console.error('⚠️', e.message)
-    );
+    // En Vercel no se revisa en cada arranque en frío: los buckets los crean las migraciones.
+    if (!process.env.VERCEL) {
+      almacen.asegurarBucket().then(
+        () => console.log(`🗂️  Fotos de etiquetas en Supabase Storage (bucket ${almacen.BUCKET}).`),
+        (e) => console.error('⚠️', e.message)
+      );
+    }
   } else {
     console.log('🗂️  Fotos de etiquetas en disco local (define SUPABASE_URL y SUPABASE_SECRET_KEY para usar Supabase Storage).');
   }

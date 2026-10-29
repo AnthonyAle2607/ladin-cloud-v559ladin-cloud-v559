@@ -1,0 +1,11 @@
+# No se suben a Vercel: datos locales, secretos y archivos que no hacen falta en la función.
+.env
+.env.*
+data.env
+*.db
+*.sqlite
+ladin_cloud_dump.json
+DOCUMENTO_LEIBLE_LADIN_CLOUD.md
+uploads/
+scratch/
+.git
