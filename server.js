@@ -23,6 +23,8 @@ const { promisify } = require('util');
 const PDFDocument = require('pdfkit');
 const db = require('./db');
 const appMovil = require('./app-movil');
+const facturacion = require('./facturacion');
+const importador = require('./importador');
 
 const execFileAsync = promisify(execFile);
 const UPLOAD_ROOT = path.join(__dirname, 'uploads', 'quejas');
@@ -394,6 +396,9 @@ async function ensureSchema() {
 
   // 6. App móvil de clientes (accesos, lotes, fotos, avisos)
   await appMovil.ensureSchema(db);
+
+  // 7. Facturación, pagos y comisiones
+  await facturacion.ensureSchema(db);
 }
 
 async function seed() {
@@ -618,6 +623,8 @@ app.delete('/api/clientes/:id', auth, async (req, res) => {
     const old = await db.query('SELECT id,nombre,apellido,codigo_cliente FROM clientes WHERE id=$1', [id]);
     if (!old.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
 
+    const conFacturas = await db.query('SELECT codigo FROM facturas WHERE cliente_id=$1 LIMIT 1', [id]);
+    if (conFacturas.rows.length) return res.status(409).json({ error: `No se puede eliminar: el cliente tiene facturas (${conFacturas.rows[0].codigo}). Se conservan por contabilidad.` });
     const fotos = await appMovil.fotosDeCliente(db, id); // los archivos se borran después; las filas caen en cascada
     tx = await db.connect();
     await tx.query('BEGIN');
@@ -1107,7 +1114,10 @@ function csvEscapeValue(value) {
   } else if (typeof value === 'object') {
     try { value = JSON.stringify(value); } catch { value = String(value); }
   }
-  const str = String(value).replace(/\r?\n/g, '\n');
+  let str = String(value).replace(/\r?\n/g, '\n');
+  // Inyección de fórmulas (CSV injection): un texto que empieza con = + - @ se ejecutaría al abrir el CSV en Excel.
+  // Se antepone una comilla simple, salvo números y teléfonos (solo dígitos y separadores), que no pueden ser fórmulas peligrosas.
+  if (typeof value === 'string' && /^[=+\-@\t\r]/.test(str) && !/^[+-]?[\d\s().,-]+$/.test(str)) str = `'${str}`;
   return /[";\n\r]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
 }
 
@@ -1161,6 +1171,9 @@ app.get('/api/admin/backup-csv.zip', auth, async (req, res) => {
    ========================================================================== */
 
 appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction });
+facturacion.registrar(app, { db, auth, intId, logAction });
+importador.registrar(app, { db, auth, intId, logAction });
+require('./usuarios').registrar(app, { db, auth, intId, logAction, userOut, getBootstrap });
 
 /* ==========================================================================
    CATCH-ALL / SERVIR APLICACIÓN FRONTEND
