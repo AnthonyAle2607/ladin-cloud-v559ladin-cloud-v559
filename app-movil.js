@@ -252,6 +252,33 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
     }
   });
 
+  /**
+   * «Mis datos»: los mismos que tiene el panel administrativo (misma fila de clientes), solo los que corresponde mostrar al cliente.
+   * No se exponen las observaciones internas ni el estado de atención: son notas del equipo.
+   */
+  app.get('/api/app/perfil', authCliente, async (req, res) => {
+    try {
+      const c = (await db.query('SELECT * FROM clientes WHERE id=$1', [req.cliente.id])).rows[0];
+      const asesora = c.asesora_id ? (await db.query('SELECT nombre,codigo_asesora FROM usuarios WHERE id=$1', [c.asesora_id])).rows[0] : null;
+      const desde = aFecha(c.fecha_registro);
+      res.json({
+        code: c.codigo_cliente || '',
+        name: [c.nombre, c.apellido].filter(Boolean).join(' '),
+        idNumber: c.cedula || '',
+        phone: c.telefono || '',
+        email: c.email || '',
+        company: c.empresa || '',
+        state: c.estado_venezuela || '',
+        advisor: asesora ? { name: asesora.nombre, code: asesora.codigo_asesora || '' } : null,
+        since: desde ? `${corta(desde)} ${desde.getUTCFullYear()}` : '',
+        contactWhatsapp: process.env.APP_WHATSAPP || '',
+      });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'No se pudieron cargar tus datos' });
+    }
+  });
+
   app.get('/api/app/etiquetas', authCliente, async (req, res) => {
     try {
       const r = await db.query('SELECT * FROM etiquetas WHERE cliente_id=$1 ORDER BY id DESC', [req.cliente.id]);

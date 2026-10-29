@@ -58,3 +58,11 @@ Permisos: solo el administrador emite facturas, anula, registra pagos, cambia re
 - **Cobranza** (Finanzas → Cobranza): saldos por cobrar en tramos de 0-15, 16-30, 31-60 y más de 60 días **desde la fecha de la factura** (el sistema no guarda fecha de vencimiento). Lista los clientes con más atraso primero; desde cada uno se abren sus facturas, se crea un recordatorio (usa los recordatorios del sistema) o se abre WhatsApp con el mensaje de cobro. Cada asesor ve solo su cartera; el administrador ve además el resumen por asesor.
 - **Recibo de comisiones** (Comisiones → «Recibo PDF»): PDF con las comisiones **ya pagadas** de un asesor en un período, con detalle por factura y espacio de firma. El asesor puede descargar el suyo.
 - **Enviar por WhatsApp** (en la factura): genera un enlace temporal al PDF (válido 14 días, firmado, con límite de solicitudes) y abre WhatsApp con el mensaje armado. WhatsApp no permite adjuntar archivos desde un enlace, por eso el PDF va como enlace. Los teléfonos de Venezuela se normalizan (`0412-1234567` → `584121234567`); si el teléfono no sirve, el panel pide uno. Define `PUBLIC_URL` (por ejemplo `https://tu-dominio.com`) para que el enlace use tu dominio; sin ella usa el host desde el que el administrador abre el panel.
+
+### Datos del cliente en la app («Mis datos»)
+
+- El cliente ve en la app los **mismos datos que tiene el panel** (misma fila de `clientes`): código, nombre, **cédula / RIF**, teléfono, correo, empresa, estado, «cliente desde» y su asesora. Es solo lectura; para corregir algo se lo pide a su asesora, y el cambio hecho en el panel se ve en la app al abrir la pantalla.
+- Hasta ahora el panel no tenía cédula: se añadió el campo **Cédula / RIF** (ficha del cliente y columna «Cédula» al importar). Se normaliza en mayúsculas y solo admite letras, números, puntos y guiones.
+- No se muestran al cliente las observaciones internas ni el estado de atención (son notas del equipo). `GET /api/app/perfil` devuelve solo una lista fija de campos.
+- La columna `clientes.cedula` se crea sola al arrancar el servidor (y está en `supabase/migrations/20261029000300_cliente_cedula.sql`).
+- `APP_WHATSAPP` (opcional) activa el botón «Corregir un dato con mi asesora» por WhatsApp.

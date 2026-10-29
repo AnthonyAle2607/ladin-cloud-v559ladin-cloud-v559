@@ -22,6 +22,7 @@ const TIPOS = {
       code: { titulo: 'Código de cliente', alias: ['codigo cliente', 'codigo de cliente', 'cod cliente', 'codigo', 'code', 'id cliente', 'nro cliente'] },
       name: { titulo: 'Nombre', requerido: true, alias: ['nombre', 'nombres', 'cliente', 'nombre completo', 'razon social', 'name'] },
       surname: { titulo: 'Apellido', alias: ['apellido', 'apellidos', 'surname'] },
+      idNumber: { titulo: 'Cédula / RIF', alias: ['cedula', 'cedula de identidad', 'ci', 'c i', 'rif', 'cedula rif', 'cedula o rif', 'documento', 'identificacion', 'nro documento', 'dni'] },
       phone: { titulo: 'Teléfono', alias: ['telefono', 'tlf', 'celular', 'movil', 'whatsapp', 'phone', 'n de contacto', 'no de contacto'] },
       email: { titulo: 'Correo', alias: ['correo', 'email', 'e mail', 'correo electronico'] },
       company: { titulo: 'Empresa', alias: ['empresa', 'compania', 'company', 'negocio'] },
@@ -254,6 +255,12 @@ async function importarCliente({ tx, v, fila, falla, r, clientes, clientesPorHue
   const primer = fechaIso(v.firstContact);
   if (primer === null) return falla(fila, 'La fecha de primer contacto no es válida (usa AAAA-MM-DD o DD/MM/AAAA)');
   if (v.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v.email)) return falla(fila, 'El correo no es válido');
+  let cedula = null;
+  if (v.idNumber) {
+    const t = String(v.idNumber).trim();
+    if (!/^[A-Za-z0-9.\-\s]{3,30}$/.test(t)) return falla(fila, 'La cédula o RIF no es válida (solo letras, números, puntos y guiones)');
+    cedula = t.replace(/\s+/g, ' ').toUpperCase();
+  }
   let asesoraId = asesoraDefecto;
   if (v.advisor) {
     const u = asesorPor(v.advisor);
@@ -264,11 +271,11 @@ async function importarCliente({ tx, v, fila, falla, r, clientes, clientesPorHue
   const existente = clave ? clientes.get(clave.toLowerCase()) : clientesPorHuella.get(claveHuella);
   if (existente) {
     if (!actualizar) { r.skipped++; return; }
-    await tx.query('UPDATE clientes SET nombre=$1,apellido=$2,telefono=COALESCE($3,telefono),email=COALESCE($4,email),empresa=COALESCE($5,empresa),asesora_id=$6,estado_venezuela=COALESCE($7,estado_venezuela),fecha_primer_contacto=COALESCE($8,fecha_primer_contacto),observaciones=COALESCE($9,observaciones),fecha_actualizacion=CURRENT_TIMESTAMP WHERE id=$10', [...datos, existente]);
+    await tx.query('UPDATE clientes SET nombre=$1,apellido=$2,telefono=COALESCE($3,telefono),email=COALESCE($4,email),empresa=COALESCE($5,empresa),asesora_id=$6,estado_venezuela=COALESCE($7,estado_venezuela),fecha_primer_contacto=COALESCE($8,fecha_primer_contacto),observaciones=COALESCE($9,observaciones),cedula=COALESCE($10,cedula),fecha_actualizacion=CURRENT_TIMESTAMP WHERE id=$11', [...datos, cedula, existente]);
     r.updated++;
     return;
   }
-  const ins = await tx.query(`INSERT INTO clientes(nombre,apellido,telefono,email,empresa,asesora_id,estado_venezuela,fecha_primer_contacto,observaciones,codigo_cliente,estado) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending') RETURNING id`, [...datos, clave ? clave.slice(0, 50) : null]);
+  const ins = await tx.query(`INSERT INTO clientes(nombre,apellido,telefono,email,empresa,asesora_id,estado_venezuela,fecha_primer_contacto,observaciones,codigo_cliente,estado,cedula) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) RETURNING id`, [...datos, clave ? clave.slice(0, 50) : null, cedula]);
   const id = ins.rows[0].id;
   if (!clave) {
     const codigo = `LC-CLI-${String(id).padStart(6, '0')}`;

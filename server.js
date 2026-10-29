@@ -127,6 +127,7 @@ function clientOut(r) {
     id: pref('c', r.id),
     code: r.codigo_cliente || '',
     name: r.nombre + (r.apellido ? ` ${r.apellido}` : ''),
+    idNumber: r.cedula || '',
     phone: r.telefono || '',
     email: r.email || '',
     company: r.empresa || '',
@@ -333,6 +334,7 @@ async function ensureSchema() {
   await db.query("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS estado_venezuela VARCHAR(80)");
   await db.query("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS fecha_primer_contacto DATE");
   await db.query("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS tipo_mercancia VARCHAR(180)");
+  await db.query("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cedula VARCHAR(30)"); // cédula o RIF; lo ve el cliente en la app
 
   // 3. Contenedores
   await db.query(`
@@ -549,12 +551,21 @@ app.get('/api/bootstrap', auth, async (req, res) => {
    GESTIÓN DE CLIENTES & REASIGNACIÓN
    ========================================================================== */
 
+/** Cédula o RIF: letras, números, puntos, guiones y espacios (V-12.345.678, J-12345678-9). Vacío = sin dato. */
+function limpiarCedula(v) {
+  const s = String(v ?? '').trim();
+  if (!s) return { valor: null };
+  return /^[A-Za-z0-9.\-\s]{3,30}$/.test(s) ? { valor: s.replace(/\s+/g, ' ').toUpperCase() } : { error: 'La cédula o RIF solo puede llevar letras, números, puntos y guiones (3 a 30 caracteres)' };
+}
+
 app.post('/api/clientes', auth, async (req, res) => {
   try {
     const b = req.body || {};
     const advisorId = req.user.rol === 'admin' ? intId(b.advisorId) : req.user.id;
     if (!b.name) return res.status(400).json({ error: 'El nombre es obligatorio' });
     if (!advisorId) return res.status(400).json({ error: 'Debes asignar una asesora' });
+    const ced = limpiarCedula(b.idNumber);
+    if (ced.error) return res.status(400).json({ error: ced.error });
 
     const parts = String(b.name).trim().split(/\s+/);
     const nombre = parts.shift();
@@ -562,9 +573,9 @@ app.post('/api/clientes', auth, async (req, res) => {
     const fc = /^\d{4}-\d{2}-\d{2}$/.test(String(b.firstContactDate || '')) ? String(b.firstContactDate) : null;
 
     const r = await db.query(
-      `INSERT INTO clientes(codigo_cliente,nombre,apellido,telefono,email,empresa,asesora_id,estado,estado_venezuela,fecha_primer_contacto,observaciones)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-      [b.code?.trim() || null, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null]
+      `INSERT INTO clientes(codigo_cliente,nombre,apellido,telefono,email,empresa,asesora_id,estado,estado_venezuela,fecha_primer_contacto,observaciones,cedula)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+      [b.code?.trim() || null, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null, ced.valor]
     );
 
     const final = await db.query('SELECT c.*,u.codigo_asesora FROM clientes c LEFT JOIN usuarios u ON u.id=c.asesora_id WHERE c.id=$1', [r.rows[0].id]);
@@ -598,9 +609,13 @@ app.put('/api/clientes/:id', auth, async (req, res) => {
     const code = (b.code || old.rows[0].codigo_cliente || `LC-CLI-${String(id).padStart(6, '0')}`).trim();
     const fc = /^\d{4}-\d{2}-\d{2}$/.test(String(b.firstContactDate || '')) ? String(b.firstContactDate) : null;
 
+    // Si quien llama no manda la cédula (otras pantallas), se conserva la que ya tenía en vez de borrarla.
+    const ced = b.idNumber === undefined ? { valor: old.rows[0].cedula || null } : limpiarCedula(b.idNumber);
+    if (ced.error) return res.status(400).json({ error: ced.error });
+
     await db.query(
-      `UPDATE clientes SET codigo_cliente=$1,nombre=$2,apellido=$3,telefono=$4,email=$5,empresa=$6,asesora_id=$7,estado=$8,estado_venezuela=$9,fecha_primer_contacto=$10,observaciones=$11,fecha_actualizacion=CURRENT_TIMESTAMP WHERE id=$12`,
-      [code, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null, id]
+      `UPDATE clientes SET codigo_cliente=$1,nombre=$2,apellido=$3,telefono=$4,email=$5,empresa=$6,asesora_id=$7,estado=$8,estado_venezuela=$9,fecha_primer_contacto=$10,observaciones=$11,cedula=$12,fecha_actualizacion=CURRENT_TIMESTAMP WHERE id=$13`,
+      [code, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null, ced.valor, id]
     );
 
     const final = await db.query('SELECT c.*,u.codigo_asesora FROM clientes c LEFT JOIN usuarios u ON u.id=c.asesora_id WHERE c.id=$1', [id]);
