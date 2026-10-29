@@ -30,6 +30,11 @@ const TABLAS = [
   { t: 'cliente_preferencias', fk: { cliente_id: ['clientes', 'omitir'] }, pk: 'cliente_id' },
   { t: 'cliente_dispositivos', fk: { cliente_id: ['clientes', 'omitir'] } },
   { t: 'cliente_avisos', fk: { cliente_id: ['clientes', 'omitir'], etiqueta_id: ['etiquetas', 'null'] } },
+  { t: 'facturas', fk: { cliente_id: ['clientes', 'omitir'], asesora_id: ['usuarios', 'null'], creado_por: ['usuarios', 'null'] } },
+  { t: 'factura_items', fk: { factura_id: ['facturas', 'omitir'], etiqueta_id: ['etiquetas', 'null'] } },
+  { t: 'factura_pagos', fk: { factura_id: ['facturas', 'omitir'], creado_por: ['usuarios', 'null'] } },
+  { t: 'comision_reglas', fk: { asesora_id: ['usuarios', 'omitir'] } },
+  { t: 'comisiones', fk: { factura_id: ['facturas', 'omitir'], asesora_id: ['usuarios', 'null'], cliente_id: ['clientes', 'null'], pagado_por: ['usuarios', 'null'] } },
 ];
 
 const esVacio = (v) => v === undefined || v === null;

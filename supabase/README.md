@@ -8,8 +8,9 @@ No usa Supabase Auth ni la API REST, por eso todas las tablas quedan cerradas a 
 
 | Archivo | Para qué |
 |---|---|
-| `migrations/20261029000000_esquema_inicial.sql` | 14 tablas con llaves foráneas, índices, RLS y el bucket privado `etiquetas-fotos`. Se puede aplicar varias veces. |
+| `migrations/20261029000000_esquema_inicial.sql` | 19 tablas en total con llaves foráneas, índices, RLS y el bucket privado `etiquetas-fotos`. Se puede aplicar varias veces. |
 | `migrations/20261029000100_fotos_almacen.sql` | Columna `etiqueta_fotos.almacen` (`disco` o `supabase`). Aplicar después de la anterior. |
+| `migrations/20261029000200_facturacion_comisiones.sql` | Facturas, líneas, pagos, reglas y comisiones (5 tablas, con RLS). Aplicar después de las anteriores. |
 | `../almacen.js`, `../scripts/subir-fotos-a-storage.js` | Guardar, leer y borrar fotos en Storage; y pasar las que siguen en disco. |
 | `../scripts/migrar-a-supabase.js` | Copia los datos de la base local (SQLite o Postgres) a Supabase conservando los `id`. |
 | `../db.js` | Acepta `DATABASE_URL` + SSL y, con ella, **no cae a SQLite** si Supabase no responde. |

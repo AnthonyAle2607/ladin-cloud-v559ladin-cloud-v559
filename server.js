@@ -23,10 +23,14 @@ const { promisify } = require('util');
 const PDFDocument = require('pdfkit');
 const db = require('./db');
 const appMovil = require('./app-movil');
+const facturacion = require('./facturacion');
+const importador = require('./importador');
 
 const execFileAsync = promisify(execFile);
 const UPLOAD_ROOT = path.join(__dirname, 'uploads', 'quejas');
-fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
+const almacenes = require('./almacen');
+// En Vercel el disco es de solo lectura: los adjuntos van a Supabase Storage y esta carpeta no hace falta.
+try { fs.mkdirSync(UPLOAD_ROOT, { recursive: true }); } catch (e) { if (!process.env.VERCEL) throw e; }
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -51,7 +55,7 @@ function resolveJwtSecret() {
 const JWT_SECRET = resolveJwtSecret();
 
 // Detrás del proxy de Easypanel, la IP real del cliente viene en X-Forwarded-For.
-if (IS_PRODUCTION) app.set('trust proxy', 1);
+if (IS_PRODUCTION || process.env.VERCEL) app.set('trust proxy', 1);
 
 // Sin CORS_ORIGIN la app solo responde a su propio origen (frontend servido por este mismo servidor).
 const corsOrigins = (process.env.CORS_ORIGIN || '').split(',').map(o => o.trim()).filter(Boolean);
@@ -125,6 +129,7 @@ function clientOut(r) {
     id: pref('c', r.id),
     code: r.codigo_cliente || '',
     name: r.nombre + (r.apellido ? ` ${r.apellido}` : ''),
+    idNumber: r.cedula || '',
     phone: r.telefono || '',
     email: r.email || '',
     company: r.empresa || '',
@@ -331,6 +336,7 @@ async function ensureSchema() {
   await db.query("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS estado_venezuela VARCHAR(80)");
   await db.query("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS fecha_primer_contacto DATE");
   await db.query("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS tipo_mercancia VARCHAR(180)");
+  await db.query("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cedula VARCHAR(30)"); // cédula o RIF; lo ve el cliente en la app
 
   // 3. Contenedores
   await db.query(`
@@ -392,8 +398,13 @@ async function ensureSchema() {
   await db.query("UPDATE usuarios SET codigo_asesora = 'ASE-' || LPAD(id::text, 3, '0') WHERE rol='asesora' AND (codigo_asesora IS NULL OR BTRIM(codigo_asesora)='')");
   await db.query("UPDATE clientes SET codigo_cliente = 'LC-CLI-' || LPAD(id::text, 6, '0') WHERE codigo_cliente IS NULL OR BTRIM(codigo_cliente) = ''");
 
+  await db.query("ALTER TABLE queja_archivos ADD COLUMN IF NOT EXISTS almacen VARCHAR(10) NOT NULL DEFAULT 'disco'"); // disco | supabase
+
   // 6. App móvil de clientes (accesos, lotes, fotos, avisos)
   await appMovil.ensureSchema(db);
+
+  // 7. Facturación, pagos y comisiones
+  await facturacion.ensureSchema(db);
 }
 
 async function seed() {
@@ -544,12 +555,21 @@ app.get('/api/bootstrap', auth, async (req, res) => {
    GESTIÓN DE CLIENTES & REASIGNACIÓN
    ========================================================================== */
 
+/** Cédula o RIF: letras, números, puntos, guiones y espacios (V-12.345.678, J-12345678-9). Vacío = sin dato. */
+function limpiarCedula(v) {
+  const s = String(v ?? '').trim();
+  if (!s) return { valor: null };
+  return /^[A-Za-z0-9.\-\s]{3,30}$/.test(s) ? { valor: s.replace(/\s+/g, ' ').toUpperCase() } : { error: 'La cédula o RIF solo puede llevar letras, números, puntos y guiones (3 a 30 caracteres)' };
+}
+
 app.post('/api/clientes', auth, async (req, res) => {
   try {
     const b = req.body || {};
     const advisorId = req.user.rol === 'admin' ? intId(b.advisorId) : req.user.id;
     if (!b.name) return res.status(400).json({ error: 'El nombre es obligatorio' });
     if (!advisorId) return res.status(400).json({ error: 'Debes asignar una asesora' });
+    const ced = limpiarCedula(b.idNumber);
+    if (ced.error) return res.status(400).json({ error: ced.error });
 
     const parts = String(b.name).trim().split(/\s+/);
     const nombre = parts.shift();
@@ -557,9 +577,9 @@ app.post('/api/clientes', auth, async (req, res) => {
     const fc = /^\d{4}-\d{2}-\d{2}$/.test(String(b.firstContactDate || '')) ? String(b.firstContactDate) : null;
 
     const r = await db.query(
-      `INSERT INTO clientes(codigo_cliente,nombre,apellido,telefono,email,empresa,asesora_id,estado,estado_venezuela,fecha_primer_contacto,observaciones)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-      [b.code?.trim() || null, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null]
+      `INSERT INTO clientes(codigo_cliente,nombre,apellido,telefono,email,empresa,asesora_id,estado,estado_venezuela,fecha_primer_contacto,observaciones,cedula)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+      [b.code?.trim() || null, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null, ced.valor]
     );
 
     const final = await db.query('SELECT c.*,u.codigo_asesora FROM clientes c LEFT JOIN usuarios u ON u.id=c.asesora_id WHERE c.id=$1', [r.rows[0].id]);
@@ -593,9 +613,13 @@ app.put('/api/clientes/:id', auth, async (req, res) => {
     const code = (b.code || old.rows[0].codigo_cliente || `LC-CLI-${String(id).padStart(6, '0')}`).trim();
     const fc = /^\d{4}-\d{2}-\d{2}$/.test(String(b.firstContactDate || '')) ? String(b.firstContactDate) : null;
 
+    // Si quien llama no manda la cédula (otras pantallas), se conserva la que ya tenía en vez de borrarla.
+    const ced = b.idNumber === undefined ? { valor: old.rows[0].cedula || null } : limpiarCedula(b.idNumber);
+    if (ced.error) return res.status(400).json({ error: ced.error });
+
     await db.query(
-      `UPDATE clientes SET codigo_cliente=$1,nombre=$2,apellido=$3,telefono=$4,email=$5,empresa=$6,asesora_id=$7,estado=$8,estado_venezuela=$9,fecha_primer_contacto=$10,observaciones=$11,fecha_actualizacion=CURRENT_TIMESTAMP WHERE id=$12`,
-      [code, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null, id]
+      `UPDATE clientes SET codigo_cliente=$1,nombre=$2,apellido=$3,telefono=$4,email=$5,empresa=$6,asesora_id=$7,estado=$8,estado_venezuela=$9,fecha_primer_contacto=$10,observaciones=$11,cedula=$12,fecha_actualizacion=CURRENT_TIMESTAMP WHERE id=$13`,
+      [code, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null, ced.valor, id]
     );
 
     const final = await db.query('SELECT c.*,u.codigo_asesora FROM clientes c LEFT JOIN usuarios u ON u.id=c.asesora_id WHERE c.id=$1', [id]);
@@ -618,6 +642,8 @@ app.delete('/api/clientes/:id', auth, async (req, res) => {
     const old = await db.query('SELECT id,nombre,apellido,codigo_cliente FROM clientes WHERE id=$1', [id]);
     if (!old.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
 
+    const conFacturas = await db.query('SELECT codigo FROM facturas WHERE cliente_id=$1 LIMIT 1', [id]);
+    if (conFacturas.rows.length) return res.status(409).json({ error: `No se puede eliminar: el cliente tiene facturas (${conFacturas.rows[0].codigo}). Se conservan por contabilidad.` });
     const fotos = await appMovil.fotosDeCliente(db, id); // los archivos se borran después; las filas caen en cascada
     tx = await db.connect();
     await tx.query('BEGIN');
@@ -930,17 +956,16 @@ app.post('/api/quejas', auth, complaintUpload.array('files', 15), async (req, re
     );
 
     const complaintId = Number(r.rows[0].id);
-    const dir = path.join(UPLOAD_ROOT, pref('q', complaintId));
-    fs.mkdirSync(dir, { recursive: true });
-
     const files = Array.isArray(req.files) ? req.files : [];
     if (files.length) {
       for (const f of files) {
         const ext = path.extname(String(f.originalname || '')).toLowerCase().replace(/[^a-z0-9.]/g, '');
         const stored = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${ext}`;
-        fs.writeFileSync(path.join(dir, stored), f.buffer);
-        await db.query('INSERT INTO queja_archivos(queja_id,nombre_original,nombre_guardado,mime_type,tamano) VALUES($1,$2,$3,$4,$5)', [
-          complaintId, f.originalname, stored, f.mimetype, f.size
+        const guardado = await almacenes.quejas.guardar(`${pref('q', complaintId)}/${stored}`, f.buffer, f.mimetype);
+        // multer entrega el nombre como latin1: «evidencia ñandú.png» llegaría como «evidencia Ã±andÃº.png».
+        const nombreOriginal = Buffer.from(String(f.originalname || ''), 'latin1').toString('utf8').slice(0, 255);
+        await db.query('INSERT INTO queja_archivos(queja_id,nombre_original,nombre_guardado,mime_type,tamano,almacen) VALUES($1,$2,$3,$4,$5,$6)', [
+          complaintId, nombreOriginal, guardado.clave, f.mimetype, f.size, guardado.almacen
         ]);
       }
     }
@@ -952,6 +977,28 @@ app.post('/api/quejas', auth, complaintUpload.array('files', 15), async (req, re
     console.error(e);
     res.status(500).json({ error: e.message || 'No se pudo registrar la incidencia' });
   }
+});
+
+/** Descarga de un adjunto de incidencia (la web ya llamaba a esta ruta y no existía). Solo el administrador o quien la registró. */
+app.get('/api/quejas/:id/archivos/:fileId', auth, async (req, res) => {
+  try {
+    const qid = intId(req.params.id);
+    const q = (await db.query('SELECT id,usuario_id FROM quejas WHERE id=$1', [qid])).rows[0];
+    if (!q) return res.status(404).json({ error: 'Incidencia no encontrada' });
+    if (req.user.rol !== 'admin' && q.usuario_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso' });
+    const f = (await db.query('SELECT nombre_original,nombre_guardado,mime_type,almacen FROM queja_archivos WHERE id=$1 AND queja_id=$2', [intId(req.params.fileId), qid])).rows[0];
+    if (!f) return res.status(404).json({ error: 'Archivo no encontrado' });
+    let contenido = await almacenes.quejas.leer(f.almacen || 'disco', f.nombre_guardado);
+    if (!contenido && (f.almacen || 'disco') === 'disco') { // archivos anteriores: uploads/quejas/q<id>/<archivo>
+      const viejo = path.join(UPLOAD_ROOT, pref('q', qid), path.basename(f.nombre_guardado));
+      if (fs.existsSync(viejo)) contenido = fs.readFileSync(viejo);
+    }
+    if (!contenido) return res.status(404).json({ error: 'Archivo no encontrado' });
+    res.setHeader('Content-Type', f.mime_type || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(f.nombre_original || 'archivo')}`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(contenido);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo descargar el archivo' }); }
 });
 
 app.get('/api/quejas', auth, async (req, res) => {
@@ -1107,7 +1154,10 @@ function csvEscapeValue(value) {
   } else if (typeof value === 'object') {
     try { value = JSON.stringify(value); } catch { value = String(value); }
   }
-  const str = String(value).replace(/\r?\n/g, '\n');
+  let str = String(value).replace(/\r?\n/g, '\n');
+  // Inyección de fórmulas (CSV injection): un texto que empieza con = + - @ se ejecutaría al abrir el CSV en Excel.
+  // Se antepone una comilla simple, salvo números y teléfonos (solo dígitos y separadores), que no pueden ser fórmulas peligrosas.
+  if (typeof value === 'string' && /^[=+\-@\t\r]/.test(str) && !/^[+-]?[\d\s().,-]+$/.test(str)) str = `'${str}`;
   return /[";\n\r]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
 }
 
@@ -1161,6 +1211,9 @@ app.get('/api/admin/backup-csv.zip', auth, async (req, res) => {
    ========================================================================== */
 
 appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction });
+facturacion.registrar(app, { db, auth, intId, logAction, JWT_SECRET });
+importador.registrar(app, { db, auth, intId, logAction });
+require('./usuarios').registrar(app, { db, auth, intId, logAction, userOut, getBootstrap });
 
 /* ==========================================================================
    CATCH-ALL / SERVIR APLICACIÓN FRONTEND
@@ -1188,7 +1241,26 @@ function getLocalIpAddresses() {
   return addresses;
 }
 
-seed()
+if (process.env.VERCEL) {
+  // Vercel: funciones sin servidor, sin listen. Cada instancia se prepara una sola vez (conexión + administrador inicial).
+  // El esquema se aplica con supabase/migrations, no al arrancar (FORCE_SCHEMA=1 lo fuerza, solo para pruebas locales).
+  let listo = null;
+  const preparar = async () => {
+    if (typeof db.initCheck === 'function') await db.initCheck();
+    if (process.env.FORCE_SCHEMA === '1') await ensureSchema();
+    await ensureAdminUser();
+  };
+  module.exports = async (req, res) => {
+    try {
+      await (listo || (listo = preparar()));
+    } catch (e) {
+      listo = null; // la próxima solicitud lo intenta de nuevo
+      console.error('No se pudo preparar la instancia:', e.message);
+      return res.status(503).json({ error: 'Servicio no disponible, intenta de nuevo en unos segundos' });
+    }
+    return app(req, res);
+  };
+} else seed()
   .then(() => {
     app.listen(PORT, '0.0.0.0', () => {
       const localIps = getLocalIpAddresses();

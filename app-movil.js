@@ -6,6 +6,7 @@
  * - /api/clientes/:id/clave, /api/etiquetas/:id/lotes y /fotos : lo que usa el personal para alimentar la app.
  * Cada consulta de /api/app filtra por el cliente de la sesión: nadie ve etiquetas ajenas.
  */
+const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -149,21 +150,30 @@ async function fotosDeCliente(db, clienteId) {
 
 function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }) {
   if (almacen.hayStorage()) {
-    almacen.asegurarBucket().then(
-      () => console.log(`🗂️  Fotos de etiquetas en Supabase Storage (bucket ${almacen.BUCKET}).`),
-      (e) => console.error('⚠️', e.message)
-    );
+    // En Vercel no se revisa en cada arranque en frío: los buckets los crean las migraciones.
+    if (!process.env.VERCEL) {
+      almacen.asegurarBucket().then(
+        () => console.log(`🗂️  Fotos de etiquetas en Supabase Storage (bucket ${almacen.BUCKET}).`),
+        (e) => console.error('⚠️', e.message)
+      );
+    }
   } else {
     console.log('🗂️  Fotos de etiquetas en disco local (define SUPABASE_URL y SUPABASE_SECRET_KEY para usar Supabase Storage).');
   }
+
+  // La sesión del cliente lleva una huella de su clave: si el personal cambia la clave, las sesiones anteriores dejan de valer.
+  const huellaClave = (hash) => crypto.createHash('sha256').update(String(hash)).digest('hex').slice(0, 16);
+  // Hash de relleno para que el login tarde lo mismo exista o no el código (no revela qué códigos existen).
+  let hashRelleno = null;
+  const rellenoBcrypt = () => hashRelleno || (hashRelleno = bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), 12));
 
   async function authCliente(req, res, next) {
     try {
       const h = req.headers.authorization || '';
       const payload = jwt.verify(h.startsWith('Bearer ') ? h.slice(7) : '', JWT_SECRET);
       if (payload.typ !== 'cliente' || !payload.cid) return res.status(401).json({ error: 'Sesión inválida' });
-      const r = await db.query('SELECT id,codigo_cliente,nombre,apellido,asesora_id FROM clientes WHERE id=$1 AND clave_hash IS NOT NULL', [payload.cid]);
-      if (!r.rows.length) return res.status(401).json({ error: 'Sesión inválida' });
+      const r = await db.query('SELECT id,codigo_cliente,nombre,apellido,asesora_id,clave_hash FROM clientes WHERE id=$1 AND clave_hash IS NOT NULL', [payload.cid]);
+      if (!r.rows.length || payload.v !== huellaClave(r.rows[0].clave_hash)) return res.status(401).json({ error: 'Sesión inválida' });
       req.cliente = r.rows[0];
       next();
     } catch (e) {
@@ -234,14 +244,41 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
       const codigo = String(req.body?.codigo || '').trim();
       const clave = String(req.body?.clave || '');
       const r = await db.query('SELECT id,nombre,apellido,clave_hash FROM clientes WHERE UPPER(codigo_cliente)=UPPER($1) AND clave_hash IS NOT NULL', [codigo]);
-      const ok = r.rows.length && (await bcrypt.compare(clave, r.rows[0].clave_hash));
-      if (!ok) return res.status(401).json({ error: 'Código o clave incorrectos.' });
+      const coincide = await bcrypt.compare(clave, r.rows[0]?.clave_hash || rellenoBcrypt());
+      if (!r.rows.length || !coincide) return res.status(401).json({ error: 'Código o clave incorrectos.' });
       const c = r.rows[0];
-      const token = jwt.sign({ cid: c.id, typ: 'cliente' }, JWT_SECRET, { expiresIn: '30d' });
+      const token = jwt.sign({ cid: c.id, typ: 'cliente', v: huellaClave(c.clave_hash) }, JWT_SECRET, { expiresIn: '30d' });
       res.json({ token, cliente: [c.nombre, c.apellido].filter(Boolean).join(' ') });
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: 'Error iniciando sesión' });
+    }
+  });
+
+  /**
+   * «Mis datos»: los mismos que tiene el panel administrativo (misma fila de clientes), solo los que corresponde mostrar al cliente.
+   * No se exponen las observaciones internas ni el estado de atención: son notas del equipo.
+   */
+  app.get('/api/app/perfil', authCliente, async (req, res) => {
+    try {
+      const c = (await db.query('SELECT * FROM clientes WHERE id=$1', [req.cliente.id])).rows[0];
+      const asesora = c.asesora_id ? (await db.query('SELECT nombre,codigo_asesora FROM usuarios WHERE id=$1', [c.asesora_id])).rows[0] : null;
+      const desde = aFecha(c.fecha_registro);
+      res.json({
+        code: c.codigo_cliente || '',
+        name: [c.nombre, c.apellido].filter(Boolean).join(' '),
+        idNumber: c.cedula || '',
+        phone: c.telefono || '',
+        email: c.email || '',
+        company: c.empresa || '',
+        state: c.estado_venezuela || '',
+        advisor: asesora ? { name: asesora.nombre, code: asesora.codigo_asesora || '' } : null,
+        since: desde ? `${corta(desde)} ${desde.getUTCFullYear()}` : '',
+        contactWhatsapp: process.env.APP_WHATSAPP || '',
+      });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'No se pudieron cargar tus datos' });
     }
   });
 
@@ -345,6 +382,36 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
     if (req.user.rol !== 'admin' && r.rows[0].asesora_id !== req.user.id) { res.status(403).json({ error: 'No tienes permiso' }); return null; }
     return r.rows[0];
   }
+
+  /** Lotes y fotos de una etiqueta tal como los ve el personal (para la pantalla de edición del panel). */
+  app.get('/api/etiquetas/:id/app', auth, async (req, res) => {
+    try {
+      const e = await etiquetaPermitida(req, res);
+      if (!e) return;
+      const lotes = (await db.query('SELECT nombre,cajas,kg_por_caja,largo_cm,ancho_cm,alto_cm FROM etiqueta_lotes WHERE etiqueta_id=$1 ORDER BY id', [e.id])).rows;
+      const fotos = (await db.query('SELECT id,titulo,lugar,creado_en FROM etiqueta_fotos WHERE etiqueta_id=$1 ORDER BY id', [e.id])).rows;
+      const cliente = e.cliente_id ? (await db.query('SELECT codigo_cliente,clave_hash FROM clientes WHERE id=$1', [e.cliente_id])).rows[0] : null;
+      res.json({
+        clientCode: cliente?.codigo_cliente || '', clientHasAccess: !!cliente?.clave_hash,
+        lots: lotes.map((l) => ({ name: l.nombre, boxes: num(l.cajas), kgPerBox: num(l.kg_por_caja), lengthCm: num(l.largo_cm), widthCm: num(l.ancho_cm), heightCm: num(l.alto_cm) })),
+        photos: fotos.map((f) => ({ id: String(f.id), title: f.titulo || '', place: f.lugar || '', date: corta(f.creado_en) })),
+      });
+    } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo cargar la información de la app' }); }
+  });
+
+  app.get('/api/etiquetas/:id/fotos/:fotoId/archivo', auth, async (req, res) => {
+    try {
+      const e = await etiquetaPermitida(req, res);
+      if (!e) return;
+      const f = (await db.query('SELECT nombre_guardado,mime_type,almacen FROM etiqueta_fotos WHERE id=$1 AND etiqueta_id=$2', [intId(req.params.fotoId), e.id])).rows[0];
+      if (!f) return res.status(404).json({ error: 'Foto no encontrada' });
+      const contenido = await almacen.leer(f.almacen, f.nombre_guardado);
+      if (!contenido) return res.status(404).json({ error: 'Foto no encontrada' });
+      res.setHeader('Content-Type', f.mime_type);
+      res.setHeader('Cache-Control', 'private, max-age=600');
+      res.send(contenido);
+    } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo cargar la foto' }); }
+  });
 
   app.put('/api/clientes/:id/clave', auth, async (req, res) => {
     try {

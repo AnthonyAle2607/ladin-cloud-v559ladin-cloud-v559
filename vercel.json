@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 30,
+      "includeFiles": "{descargas/**,node_modules/pdfkit/js/data/**}"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api" },
+    { "source": "/f/:token", "destination": "/api" },
+    { "source": "/descargas/:file*", "destination": "/api" }
+  ]
+}

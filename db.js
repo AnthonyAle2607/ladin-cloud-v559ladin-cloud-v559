@@ -21,7 +21,8 @@ function opcionesSsl() {
 }
 
 const pgPool = new Pool(process.env.DATABASE_URL
-  ? { connectionString: process.env.DATABASE_URL, ssl: opcionesSsl(), max: Number(process.env.PGPOOL_MAX || 10), connectionTimeoutMillis: 10000 }
+  // En Vercel cada instancia es pequeña y puede haber muchas a la vez: pool corto y conexiones que se sueltan pronto.
+  ? { connectionString: process.env.DATABASE_URL, ssl: opcionesSsl(), max: Number(process.env.PGPOOL_MAX || (process.env.VERCEL ? 2 : 10)), idleTimeoutMillis: process.env.VERCEL ? 5000 : 30000, connectionTimeoutMillis: 10000 }
   : {
       user: process.env.PGUSER || 'postgres',
       host: process.env.PGHOST || 'localhost',
