@@ -1,6 +1,6 @@
 # Publicar el panel en Vercel
 
-El panel (servidor Express + pantalla web en `public/`) corre en Vercel como **función sin servidor**: `api/index.js` carga `server.js` sin `listen`, y `vercel.json` reenvía `/api/*`, `/f/*` y `/descargas/*` a esa función. El resto (`public/`) lo sirve la CDN de Vercel.
+El panel (servidor Express + pantalla web en `public/`) corre en Vercel como **función sin servidor**: `api/index.js` carga `server.js` sin `listen`, y `vercel.json` reenvía `/api/*`, `/f/*`, `/descargas/*` y cualquier otra ruta a esa función. La carpeta `public/` va dentro de la función y además se publica como archivos estáticos (`outputDirectory`), de modo que la pantalla web carga aunque falle una de las dos vías.
 
 ## 1. Aplicar el esquema en Supabase (una vez)
 
@@ -17,7 +17,7 @@ Todos se pueden ejecutar más de una vez sin problema.
 ## 2. Crear el proyecto en Vercel
 
 1. *Add New… → Project* e importa el repositorio `ladin-cloud-v559ladin-cloud-v559` (rama `main`, o la rama que quieras publicar).
-2. **Framework Preset: Other.** Sin comando de build ni carpeta de salida (déjalos vacíos). **Root Directory:** la raíz del repositorio.
+2. **Framework Preset: Other.** No cambies el comando de build ni la carpeta de salida: `vercel.json` ya fija la carpeta de salida (`public`). **Root Directory:** la raíz del repositorio.
 3. Antes de desplegar, añade las variables de entorno (sección siguiente).
 
 ## 3. Variables de entorno (Settings → Environment Variables)
