@@ -22,6 +22,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const PDFDocument = require('pdfkit');
 const db = require('./db');
+const appMovil = require('./app-movil');
 
 const execFileAsync = promisify(execFile);
 const UPLOAD_ROOT = path.join(__dirname, 'uploads', 'quejas');
@@ -390,6 +391,9 @@ async function ensureSchema() {
   // Actualizaciones de códigos por defecto
   await db.query("UPDATE usuarios SET codigo_asesora = 'ASE-' || LPAD(id::text, 3, '0') WHERE rol='asesora' AND (codigo_asesora IS NULL OR BTRIM(codigo_asesora)='')");
   await db.query("UPDATE clientes SET codigo_cliente = 'LC-CLI-' || LPAD(id::text, 6, '0') WHERE codigo_cliente IS NULL OR BTRIM(codigo_cliente) = ''");
+
+  // 6. App móvil de clientes (accesos, lotes, fotos, avisos)
+  await appMovil.ensureSchema(db);
 }
 
 async function seed() {
@@ -845,6 +849,7 @@ app.put('/api/etiquetas/:id', auth, async (req, res) => {
     );
 
     await logAction(req.user.id, `Etiqueta ${labelNumber} actualizada`, 'etiquetas', id, `Se actualizó la etiqueta.`);
+    await appMovil.avisarCambioDeEstado(db, old, r.rows[0]); // avisa al cliente solo si cambió lo que ve en la app
     res.json(labelOut(r.rows[0]));
   } catch (e) {
     console.error(e);
@@ -1144,6 +1149,12 @@ app.get('/api/admin/backup-csv.zip', auth, async (req, res) => {
     if (!res.headersSent) res.status(500).json({ error: 'No se pudo generar la copia' });
   }
 });
+
+/* ==========================================================================
+   APP MÓVIL DE CLIENTES (/api/app/*) Y RUTAS DEL PERSONAL QUE LA ALIMENTAN
+   ========================================================================== */
+
+appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction });
 
 /* ==========================================================================
    CATCH-ALL / SERVIR APLICACIÓN FRONTEND
