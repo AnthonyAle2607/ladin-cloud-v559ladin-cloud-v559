@@ -20,7 +20,7 @@ const MAX_TEXTO = 60000; // caracteres de la hoja que se le pasan al modelo
 
 const PROVEEDORES = {
   openai: { url: 'https://api.openai.com/v1', modelo: 'gpt-4o-mini', imagenes: true },
-  gemini: { url: 'https://generativelanguage.googleapis.com/v1beta/openai', modelo: 'gemini-flash-latest', imagenes: true },
+  gemini: { url: 'https://generativelanguage.googleapis.com/v1beta/openai', modelo: 'gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite', imagenes: true }, // en orden: si uno está saturado se usa el siguiente
   ollama: { url: 'http://localhost:11434/v1', modelo: 'qwen2.5vl', imagenes: true, espera: 300 }, // en CPU una foto tarda minutos
   deepseek: { url: 'https://api.deepseek.com/v1', modelo: 'deepseek-chat', imagenes: false },
 };
@@ -29,9 +29,12 @@ function configuracion() {
   const nombre = String(process.env.IA_PROVEEDOR || '').trim().toLowerCase();
   const base = PROVEEDORES[nombre] || {};
   const url = String(process.env.IA_BASE_URL || base.url || '').trim().replace(/\/+$/, '');
-  const modelo = String(process.env.IA_MODELO || base.modelo || '').trim();
-  const espera = Number(process.env.IA_ESPERA_SEGUNDOS) || base.espera || 90;
-  return { nombre: nombre || 'personalizado', url, modelo, clave: String(process.env.IA_API_KEY || '').trim(), imagenes: base.imagenes !== false, esperaMs: espera * 1000 };
+  // IA_MODELO admite varios separados por comas: se prueban en orden cuando uno está saturado o no responde.
+  const modelos = String(process.env.IA_MODELO || base.modelo || '').split(',').map((m) => m.trim()).filter(Boolean);
+  let espera = Number(process.env.IA_ESPERA_SEGUNDOS) || base.espera || 90;
+  // En Vercel la función se corta a los 30 s (vercel.json): se responde antes, con un mensaje claro.
+  if (process.env.VERCEL) espera = Math.min(espera, 25);
+  return { nombre: nombre || 'personalizado', url, modelo: modelos[0] || '', modelos, clave: String(process.env.IA_API_KEY || '').trim(), imagenes: base.imagenes !== false, esperaMs: espera * 1000 };
 }
 
 const INSTRUCCIONES = `Eres un asistente de una empresa de carga China → Venezuela. Lees PACKING LISTS de proveedores chinos (pueden venir en inglés, chino o español, con columnas en cualquier orden, celdas combinadas y totales resaltados) y devuelves SOLO un objeto JSON, sin texto adicional, con esta forma exacta:
@@ -105,7 +108,26 @@ function hojaComoTexto(buffer, nombre) {
 
 /* ---------- llamada al modelo ---------- */
 
+/** Pregunta al primer modelo de la lista; si está saturado (429/503), falla o no responde a tiempo, pasa al siguiente. */
 async function preguntarIA(cfg, contenidoUsuario) {
+  const limite = Date.now() + cfg.esperaMs; // el plazo es para todos los intentos juntos
+  let ultimoError;
+  for (const modelo of cfg.modelos) {
+    const resta = limite - Date.now();
+    if (resta < 2000) break;
+    try {
+      return { datos: await preguntarModelo({ ...cfg, modelo, esperaMs: resta }, contenidoUsuario), modelo };
+    } catch (e) {
+      ultimoError = e;
+      const reintentable = e.name === 'TimeoutError' || e.name === 'AbortError' || [429, 500, 502, 503, 504].includes(e.statusProveedor);
+      if (!reintentable) throw e;
+      console.warn(`Lector de packing list: ${modelo} no disponible (${e.message.slice(0, 120)}); se prueba el siguiente.`);
+    }
+  }
+  throw ultimoError || Object.assign(new Error('La IA tardó demasiado en responder. Intenta de nuevo.'), { name: 'TimeoutError' });
+}
+
+async function preguntarModelo(cfg, contenidoUsuario) {
   const cuerpo = { model: cfg.modelo, temperature: 0, messages: [{ role: 'system', content: INSTRUCCIONES }, { role: 'user', content: contenidoUsuario }], response_format: { type: 'json_object' } };
   const pedir = async (body) => {
     const r = await fetch(`${cfg.url}/chat/completions`, {
@@ -121,9 +143,11 @@ async function preguntarIA(cfg, contenidoUsuario) {
   // Algunos modelos o servidores no aceptan response_format: se reintenta sin él (el prompt ya pide solo JSON).
   if (!r.ok && r.status === 400) { delete cuerpo.response_format; r = await pedir(cuerpo); }
   if (!r.ok) {
-    const detalle = texto(r.j?.error?.message || r.j?.error || r.j?.message, 300);
+    const e = Array.isArray(r.j) ? r.j[0] : r.j; // Gemini manda el error dentro de una lista
+    const detalle = texto(e?.error?.message || (typeof e?.error === 'string' ? e.error : '') || e?.message, 300);
     const err = new Error(`El proveedor de IA respondió ${r.status}${detalle ? `: ${detalle}` : ''}`);
     err.status = r.status === 401 || r.status === 403 ? 503 : 502;
+    err.statusProveedor = r.status;
     throw err;
   }
   const contenido = r.j?.choices?.[0]?.message?.content;
@@ -248,9 +272,10 @@ function registrar(app, { auth, logAction }) {
       } else {
         return res.status(400).json({ error: 'Formato no admitido. Sube una foto (JPG, PNG o WEBP) o un Excel/CSV. Si es PDF, toma una captura de pantalla.' });
       }
-      const datos = normalizar(await preguntarIA(cfg, contenido));
+      const respuesta = await preguntarIA(cfg, contenido);
+      const datos = normalizar(respuesta.datos);
       const { sugerido, avisos } = revisar(datos);
-      await logAction(req.user.id, 'Packing list leído con IA', 'etiquetas', null, `${datos.proveedor || 'Proveedor sin nombre'} · ${sugerido.cajas ?? '?'} cajas · ${sugerido.cbm ?? '?'} CBM (${cfg.nombre}/${cfg.modelo}).`);
+      await logAction(req.user.id, 'Packing list leído con IA', 'etiquetas', null, `${datos.proveedor || 'Proveedor sin nombre'} · ${sugerido.cajas ?? '?'} cajas · ${sugerido.cbm ?? '?'} CBM (${cfg.nombre}/${respuesta.modelo}).`);
       res.json({ datos, sugerido, avisos });
     } catch (e) {
       console.error('Lector de packing list:', e.message);

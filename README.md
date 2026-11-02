@@ -78,7 +78,7 @@ Usa cualquier proveedor compatible con la API de OpenAI. En el `.env`:
 
 | Proveedor | `IA_PROVEEDOR` | `IA_API_KEY` | Modelo por defecto |
 |---|---|---|---|
-| Google Gemini | `gemini` | clave de AI Studio | `gemini-flash-latest` (alias que sigue al Flash vigente; fija uno con `IA_MODELO` si prefieres) |
+| Google Gemini | `gemini` | clave de AI Studio | `gemini-3.6-flash`, si está saturado `gemini-3.5-flash` y luego `gemini-3.5-flash-lite` |
 | OpenAI | `openai` | clave de OpenAI | `gpt-4o-mini` |
 | Ollama (local, gratis) | `ollama` | — | `qwen2.5vl` (`ollama pull qwen2.5vl`) |
 | DeepSeek | `deepseek` | clave de DeepSeek | `deepseek-chat` (no lee fotos: solo Excel/CSV) |
