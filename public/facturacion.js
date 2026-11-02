@@ -77,10 +77,12 @@
     page().innerHTML = cargando('Facturación');
     try { facturas = await api('/api/facturas'); } catch (e) { if (alCambiar('billing')) page().innerHTML = fallo('Facturación', e); return; }
     if (!alCambiar('billing')) return;
+    const selPeriodo = window.Periodo ? Periodo.selector(facturas.map((f) => f.date)) : '';
+    if (window.Periodo) facturas = facturas.filter((f) => Periodo.en(f.date)); // por mes de la factura (Global: todas)
     const vigentes = facturas.filter((f) => f.status !== 'anulada');
     const sum = (k) => r2(vigentes.reduce((s, f) => s + f[k], 0));
     page().innerHTML = `
-      <div class="page-head"><div><h1>Facturación</h1><p>${isAdmin() ? 'Facturas de servicios de flete, pagos y saldos por cliente.' : 'Facturas de tus clientes (solo lectura).'}</p></div>
+      <div class="page-head"><div><h1>Facturación</h1><p>${isAdmin() ? 'Facturas de servicios de flete, pagos y saldos por cliente.' : 'Facturas de tus clientes (solo lectura).'}</p>${selPeriodo}</div>
         <div class="row">${isAdmin() ? '<button class="btn btn-primary" id="fxNueva">Nueva factura</button>' : ''}</div></div>
       <div class="fx-kpis">
         <div class="fx-kpi"><span>Facturado</span><b>${usd(sum('total'))}</b><small>${vigentes.length} factura(s) vigentes</small></div>
@@ -353,6 +355,7 @@
       const q = new URLSearchParams();
       if (admin && comFiltroAsesor) q.set('asesora', comFiltroAsesor);
       if (comFiltroEstado) q.set('estado', comFiltroEstado);
+      if (window.Periodo?.valor()) q.set('mes', Periodo.valor()); // por mes de la factura
       [datos, reglas] = await Promise.all([api(`/api/comisiones${q.toString() ? '?' + q : ''}`), admin ? api('/api/comisiones/reglas') : null]);
     } catch (e) { if (alCambiar('commissions')) page().innerHTML = fallo('Comisiones', e); return; }
     if (!alCambiar('commissions')) return;
@@ -394,7 +397,7 @@
       ${datos.items.length ? datos.items.map((c) => `<tr>${admin ? `<td>${c.status === 'pendiente' ? `<input type="checkbox" data-com="${esc(c.id)}" aria-label="Seleccionar ${esc(c.invoiceCode)}">` : ''}</td>` : ''}<td><span class="code-pill">${esc(c.invoiceCode)}</span></td><td>${esc(fecha(c.invoiceDate))}</td><td>${esc(c.clientName)}<br><small class="fx-muted">${esc(c.clientCode)}</small></td>${admin ? `<td>${esc(c.advisorName || '—')}</td>` : ''}<td class="fx-num">${c.rule === 'fijo_cbm' ? c.base + ' CBM' : usd(c.base)}</td><td><small>${esc(textoRegla(c.rule, c.rate))}</small></td><td class="fx-num"><b>${usd(c.amount)}</b></td><td>${pillCom(c.status)}${c.paidDate ? `<br><small class="fx-muted">${esc(fecha(c.paidDate))}</small>` : ''}</td></tr>`).join('') : `<tr><td colspan="${admin ? 9 : 7}"><div class="empty compact">No hay comisiones con este filtro.</div></td></tr>`}
     </tbody></table></div></div>`;
 
-    page().innerHTML = `<div class="page-head"><div><h1>Comisiones</h1><p>${admin ? 'Comisiones generadas por las facturas de cada asesor.' : 'Las comisiones que generan tus clientes.'}</p></div></div>${kpis}${reglaAsesor}${reglasHtml}${porCliente}${porAsesor}${filtros}${detalle}`;
+    page().innerHTML = `<div class="page-head"><div><h1>Comisiones</h1><p>${admin ? 'Comisiones generadas por las facturas de cada asesor.' : 'Las comisiones que generan tus clientes.'}</p>${window.Periodo ? Periodo.selector(datos.items.map((c) => c.invoiceDate)) : ''}</div></div>${kpis}${reglaAsesor}${reglasHtml}${porCliente}${porAsesor}${filtros}${detalle}`;
 
     document.querySelectorAll('[data-recibo]').forEach((b) => (b.onclick = () => reciboModal(b.dataset.recibo, b.dataset.nombre)));
     $('miRecibo')?.addEventListener('click', () => reciboModal('', me()?.name || ''));
@@ -601,9 +604,11 @@
   const labelModalOriginal = window.labelModal;
   window.labelModal = function (existing = null, presetClientId = '', presetParentId = '') {
     labelModalOriginal(existing, presetClientId, presetParentId);
-    if (!existing || !isAdmin()) return;
     const cuerpo = document.querySelector('#modal .modal-body');
     if (!cuerpo) return;
+    // Las subetiquetas heredan cajas y CBM de la principal: el lector va solo en la etiqueta principal.
+    if (!presetParentId && !existing?.parentLabelId) ponerLectorPacking(cuerpo);
+    if (!existing || !isAdmin()) return;
     cuerpo.insertAdjacentHTML('beforeend', '<div class="fx-box" id="fxApp" style="margin-top:14px"><h3>Lotes y fotos (app del cliente)</h3><span class="fx-muted">Cargando…</span></div>');
     cargarAppEtiqueta(existing);
   };
@@ -614,6 +619,8 @@
     try { d = await api(`/api/etiquetas/${encodeURIComponent(etq.id)}/app`); } catch (e) { if (caja) caja.innerHTML = `<h3>Lotes y fotos (app del cliente)</h3><span class="fx-bad">${esc(e.message)}</span>`; return; }
     if (!$('fxApp')) return;
     const lotes = d.lots.map((l) => ({ ...l }));
+    // El lector de packing list deja aquí sus lotes (sin guardar: se confirman con «Guardar lotes»).
+    $('fxApp')._ponerLotes = (nuevos) => { lotes.splice(0, lotes.length, ...nuevos); pintar(); };
     const nuevaFila = () => ({ name: `Lote ${String.fromCharCode(65 + lotes.length)}`, boxes: '', kgPerBox: '', lengthCm: '', widthCm: '', heightCm: '' });
     const pintar = () => {
       const pesoTotal = r2(lotes.reduce((s, l) => s + num(l.boxes) * num(l.kgPerBox), 0));
@@ -659,5 +666,97 @@
       });
     };
     pintar();
+  }
+
+  /* =====================================================================================================
+     Etiqueta: lector de packing list con IA (autocompleta cajas, CBM, mercancía, cliente y lotes)
+     ===================================================================================================== */
+
+  const soloDigitos = (v) => String(v || '').replace(/\D/g, '');
+  const sinTildes = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+  /** Busca el comprador del packing list entre los clientes visibles: primero por RIF/cédula, luego por nombre o empresa. */
+  function clienteDelPacking(d) {
+    const lista = typeof scopedClients === 'function' ? scopedClients() : db.clients;
+    const rif = soloDigitos(d.rifComprador);
+    if (rif.length >= 6) { const c = lista.find((x) => soloDigitos(x.idNumber) === rif); if (c) return c; }
+    const nombre = sinTildes(d.comprador);
+    if (nombre.length < 4) return null;
+    return lista.find((x) => [x.company, x.name].some((v) => { const s = sinTildes(v); return s.length >= 4 && (s === nombre || nombre.includes(s) || s.includes(nombre)); })) || null;
+  }
+
+  function llenar(id, valor) {
+    const el = $(id);
+    if (!el || valor == null || valor === '' || el.readOnly) return false;
+    el.value = valor;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.style.outline = '2px solid var(--amber, #e09a1a)';
+    setTimeout(() => { el.style.outline = ''; }, 4000);
+    return true;
+  }
+
+  function ponerLectorPacking(cuerpo) {
+    const html = `<div class="fx-box" id="fxPacking"><h3>Leer packing list con IA</h3>
+      <p class="fx-muted" style="margin:0 0 8px">Sube la foto o el Excel del packing list del proveedor: se llenan cajas, CBM, mercancía y cliente. Revisa los datos antes de guardar.</p>
+      <div class="row" style="flex-wrap:wrap;gap:8px"><input id="fxPackingArchivo" type="file" accept="image/jpeg,image/png,image/webp,.xlsx,.xls,.csv"><button class="btn btn-primary btn-sm" id="fxPackingLeer" type="button">Leer y autocompletar</button></div>
+      <div id="fxPackingRes"></div></div>`;
+    const intro = cuerpo.querySelector('.modal-intro');
+    if (intro) intro.insertAdjacentHTML('afterend', html); else cuerpo.insertAdjacentHTML('afterbegin', html);
+    $('fxPackingLeer').onclick = async () => {
+      const archivo = $('fxPackingArchivo').files[0];
+      if (!archivo) return aviso('Elige la foto o el Excel del packing list');
+      const boton = $('fxPackingLeer');
+      boton.disabled = true; boton.textContent = 'Leyendo…';
+      $('fxPackingRes').innerHTML = '<p class="fx-muted">La IA está leyendo el documento (puede tardar unos segundos)…</p>';
+      try {
+        const f = new FormData();
+        f.append('archivo', await comprimirImagen(archivo));
+        const r = await enviar('/api/packing-list/leer', f);
+        aplicarPacking(r);
+      } catch (e) {
+        $('fxPackingRes').innerHTML = `<p class="fx-bad">${esc(e.message)}</p>`;
+      } finally {
+        boton.disabled = false; boton.textContent = 'Leer y autocompletar';
+      }
+    };
+  }
+
+  function aplicarPacking({ datos: d, sugerido: s, avisos }) {
+    const llenos = [];
+    if (llenar('mBoxesPacking', s.cajas)) llenos.push('cajas');
+    if (llenar('mCbmPacking', s.cbm)) llenos.push('CBM');
+    if (llenar('mCargoType', s.mercancia)) llenos.push('mercancía');
+    if ($('mNotes') && !$('mNotes').value.trim()) llenar('mNotes', [d.numeroDocumento && `Packing list ${d.numeroDocumento}`, d.proveedor, d.fecha, s.pesoBrutoKg != null && `${s.pesoBrutoKg} kg brutos`].filter(Boolean).join(' · '));
+    // Cliente: solo si todavía no hay uno elegido.
+    let clienteTxt = '';
+    if ($('mClient') && !$('mClient').value) {
+      const c = clienteDelPacking(d);
+      if (c) {
+        $('mClient').value = c.id;
+        $('mClientSearch').value = fallbackClientLabel(c.id);
+        $('mClient').dispatchEvent(new Event('change', { bubbles: true }));
+        llenos.push('cliente');
+      } else if (d.comprador) clienteTxt = `<p class="fx-warn">No encontré al comprador «${esc(d.comprador)}»${d.rifComprador ? ` (${esc(d.rifComprador)})` : ''} entre los clientes: elígelo a mano.</p>`;
+    }
+    // Lotes de la app del cliente: solo existen en una etiqueta ya guardada (y los ve el administrador).
+    let lotesTxt = '';
+    if (s.lotes.length) {
+      const faltan = s.lotes.some((l) => !(l.kgPorCaja > 0) || !(l.largoCm > 0) || !(l.anchoCm > 0) || !(l.altoCm > 0));
+      if ($('fxApp')?._ponerLotes) {
+        $('fxApp')._ponerLotes(s.lotes.map((l) => ({ name: l.nombre, boxes: l.cajas, kgPerBox: l.kgPorCaja ?? '', lengthCm: l.largoCm ?? '', widthCm: l.anchoCm ?? '', heightCm: l.altoCm ?? '' })));
+        lotesTxt = `<p class="fx-muted">${s.lotes.length} lote(s) cargados abajo, sin guardar: revisa y pulsa «Guardar lotes».${faltan ? ' <span class="fx-warn">El documento no trae peso o medidas de algunas cajas: complétalos.</span>' : ''}</p>`;
+      } else if (isAdmin()) lotesTxt = '<p class="fx-muted">Guarda la etiqueta y vuelve a leer el packing list al editarla para cargar también los lotes de la app del cliente.</p>';
+    }
+    const n = (v, dec = 3) => (v == null ? '—' : esc(String(Math.round(v * 10 ** dec) / 10 ** dec)));
+    $('fxPackingRes').innerHTML = `
+      <p style="margin:10px 0 6px">${llenos.length ? `<b>Autocompletado:</b> ${esc(llenos.join(', '))}.` : '<span class="fx-warn">No se pudo llenar ningún campo.</span>'}
+        <span class="fx-muted">${esc([d.proveedor, d.comprador && `para ${d.comprador}`, d.numeroDocumento && `N.º ${d.numeroDocumento}`, d.fecha].filter(Boolean).join(' · '))}</span></p>
+      ${avisos.length ? `<ul class="fx-warn" style="margin:0 0 8px;padding-left:18px">${avisos.map((a) => `<li>${esc(a)}</li>`).join('')}</ul>` : '<p class="fx-muted" style="margin:0 0 8px">Las líneas cuadran con los totales del documento.</p>'}
+      ${clienteTxt}${lotesTxt}
+      <details><summary class="fx-muted">Ver lo que leyó la IA (${d.lineas.length} línea(s))</summary>
+        <div class="fx-scroll"><table class="fx-lines"><thead><tr><th>Producto</th><th>Cant.</th><th>Cajas</th><th>Caja (cm)</th><th>Bruto kg</th><th>Neto kg</th><th>CBM</th></tr></thead><tbody>
+          ${d.lineas.map((l) => `<tr><td>${esc([l.descripcion, l.sku].filter(Boolean).join(' · '))}</td><td>${n(l.cantidad, 2)} ${esc(l.unidad)}</td><td>${n(l.cajas, 1)}</td><td>${l.largoCm ? `${n(l.largoCm, 1)}×${n(l.anchoCm, 1)}×${n(l.altoCm, 1)}` : '—'}</td><td>${n(l.pesoBrutoKg, 2)}</td><td>${n(l.pesoNetoKg, 2)}</td><td>${n(l.cbm)}</td></tr>`).join('')}
+          <tr><td><b>Total impreso</b></td><td>${n(d.totales.cantidad, 2)}</td><td>${n(d.totales.cajas, 1)}</td><td></td><td>${n(d.totales.pesoBrutoKg, 2)}</td><td>${n(d.totales.pesoNetoKg, 2)}</td><td>${n(d.totales.cbm)}</td></tr>
+        </tbody></table></div></details>`;
   }
 })();

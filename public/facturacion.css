@@ -49,3 +49,15 @@
 .fx-photo button{position:absolute;top:3px;right:3px;z-index:2;border:0;border-radius:50%;width:22px;height:22px;background:rgba(17,18,16,.8);color:#fff;cursor:pointer;line-height:1}
 .fx-rule-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding:8px 0}
 @media (max-width:640px){.fx-kpi b{font-size:28px}.fx-lines input.fx-desc{min-width:120px}}
+
+/* Documentos adjuntos (public/documentos.js) */
+.doc-list{display:grid;gap:6px}
+.doc-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}
+.doc-row .doc-name{text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+@media (max-width:640px){.doc-row{grid-template-columns:minmax(0,1fr) auto}.doc-row .code-pill,.doc-row small{grid-column:1/-1}}
+
+/* Filtro por mes de las estadísticas (public/periodo.js) */
+.periodo-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.periodo-bar label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.periodo-bar select{border:1px solid var(--line);background:var(--paper);border-radius:8px;padding:6px 8px;font:inherit;color:var(--ink)}
+.periodo-nota{font-size:12px;color:var(--amber-d)}

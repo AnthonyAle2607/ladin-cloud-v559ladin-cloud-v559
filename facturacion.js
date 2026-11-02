@@ -453,6 +453,13 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
       const filtros = [], params = [];
       if (asesora) { params.push(asesora); filtros.push(`m.asesora_id=$${params.length}`); }
       if (['pendiente', 'pagada', 'anulada'].includes(req.query.estado)) { params.push(req.query.estado); filtros.push(`m.estado=$${params.length}`); }
+      // mes=YYYY-MM: solo las comisiones de facturas emitidas ese mes (sin mes, todas).
+      const mes = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(String(req.query.mes || ''));
+      if (mes) {
+        const ultimo = new Date(Date.UTC(Number(mes[1]), Number(mes[2]), 0)).getUTCDate();
+        params.push(`${mes[0]}-01`, `${mes[0]}-${String(ultimo).padStart(2, '0')}`);
+        filtros.push(`f.fecha_factura BETWEEN $${params.length - 1} AND $${params.length}`);
+      }
       const rows = (await db.query(`${COMISION_SQL} ${filtros.length ? 'WHERE ' + filtros.join(' AND ') : ''} ORDER BY m.id DESC LIMIT 1000`, params)).rows.map(comisionOut);
       const vigentes = rows.filter((c) => c.status !== 'anulada');
       const suma = (arr) => r2(arr.reduce((s, c) => s + c.amount, 0));

@@ -66,3 +66,29 @@ Permisos: solo el administrador emite facturas, anula, registra pagos, cambia re
 - No se muestran al cliente las observaciones internas ni el estado de atención (son notas del equipo). `GET /api/app/perfil` devuelve solo una lista fija de campos.
 - La columna `clientes.cedula` se crea sola al arrancar el servidor (y está en `supabase/migrations/20261029000300_cliente_cedula.sql`).
 - `APP_WHATSAPP` (opcional) activa el botón «Corregir un dato con mi asesora» por WhatsApp.
+
+
+## Lector de packing list con IA
+
+En la ficha de una etiqueta principal, el recuadro **«Leer packing list con IA»** recibe la foto (JPG, PNG o WEBP) o el Excel/CSV del packing list del proveedor y autocompleta cajas, CBM, tipo de mercancía, observaciones y, si lo encuentra por RIF o nombre, el cliente. En una etiqueta ya guardada también carga los lotes de la app del cliente (sin guardarlos). Nada se guarda hasta que el usuario confirma.
+
+Código: `packing-ia.js` (`POST /api/packing-list/leer`, `GET /api/packing-list/estado`). Compara la suma de las líneas con los totales impresos y el CBM con las medidas de las cajas, y avisa cuando no cuadran.
+
+Usa cualquier proveedor compatible con la API de OpenAI. En el `.env`:
+
+| Proveedor | `IA_PROVEEDOR` | `IA_API_KEY` | Modelo por defecto |
+|---|---|---|---|
+| Google Gemini | `gemini` | clave de AI Studio | `gemini-flash-latest` (alias que sigue al Flash vigente; fija uno con `IA_MODELO` si prefieres) |
+| OpenAI | `openai` | clave de OpenAI | `gpt-4o-mini` |
+| Ollama (local, gratis) | `ollama` | — | `qwen2.5vl` (`ollama pull qwen2.5vl`) |
+| DeepSeek | `deepseek` | clave de DeepSeek | `deepseek-chat` (no lee fotos: solo Excel/CSV) |
+
+`IA_MODELO` cambia el modelo e `IA_BASE_URL` apunta a otro servidor compatible. Los PDF no se leen directo: sube una captura.
+
+
+## Documentos adjuntos, asesor fijo y estadísticas por mes
+
+- **Documentos** (`documentos.js`, `public/documentos.js`): en la ficha del cliente (cédula, RIF, registro mercantil, otro) y de la etiqueta (packing list, factura comercial, fotos de la mercancía, fotos de las cajas, otro). PDF, JPG, PNG, WEBP, Excel o Word de hasta 10 MB; el tipo se valida por los bytes. Los ven y suben el administrador y la asesora del cliente. Se guardan en el bucket privado `documentos` de Supabase Storage (o en `uploads/documentos/` sin Storage) y se borran con su cliente o etiqueta. En Supabase hay que aplicar `supabase/migrations/20261102000000_documentos.sql`.
+- **Asesor del cliente**: al crear un cliente queda asignado a quien lo registra (nombre y código de asesora, sin lista desplegable). Para moverlo de cartera se usa «Reasignar cartera», que ahora también reparte los clientes registrados por el administrador.
+- **Período** (`public/periodo.js`): Estadísticas, Reportes, Facturación y Comisiones tienen un selector «Global / mes». Con un mes elegido se cuenta solo lo registrado ese mes (clientes y etiquetas por fecha de registro, facturas y comisiones por fecha de la factura). `GET /api/comisiones?mes=YYYY-MM`.
+- **Exportar etiquetas**: el CSV respeta la búsqueda y el filtro de estado de la pantalla e incluye cliente, asesora, mercancía, cajas, CBM, contenedor y fechas.

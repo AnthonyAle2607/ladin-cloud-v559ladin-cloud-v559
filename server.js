@@ -25,6 +25,7 @@ const db = require('./db');
 const appMovil = require('./app-movil');
 const facturacion = require('./facturacion');
 const importador = require('./importador');
+const documentos = require('./documentos');
 
 const execFileAsync = promisify(execFile);
 const UPLOAD_ROOT = path.join(__dirname, 'uploads', 'quejas');
@@ -411,6 +412,9 @@ async function ensureSchema() {
 
   // 7. Facturación, pagos y comisiones
   await facturacion.ensureSchema(db);
+
+  // 8. Documentos adjuntos de clientes y etiquetas
+  await documentos.ensureSchema(db);
 }
 
 async function seed() {
@@ -571,7 +575,8 @@ function limpiarCedula(v) {
 app.post('/api/clientes', auth, async (req, res) => {
   try {
     const b = req.body || {};
-    const advisorId = req.user.rol === 'admin' ? intId(b.advisorId) : req.user.id;
+    // El cliente queda con quien lo registra; para moverlo de cartera está «Reasignar cartera».
+    const advisorId = req.user.id;
     if (!b.name) return res.status(400).json({ error: 'El nombre es obligatorio' });
     if (!advisorId) return res.status(400).json({ error: 'Debes asignar una asesora' });
     const ced = limpiarCedula(b.idNumber);
@@ -612,7 +617,7 @@ app.put('/api/clientes/:id', auth, async (req, res) => {
     if (req.user.rol !== 'admin' && old.rows[0].asesora_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso' });
 
     const b = req.body || {};
-    const advisorId = req.user.rol === 'admin' ? intId(b.advisorId) : req.user.id;
+    const advisorId = old.rows[0].asesora_id; // la asesora no se cambia aquí: solo con «Reasignar cartera»
     const parts = String(b.name || '').trim().split(/\s+/);
     const nombre = parts.shift() || '';
     const apellido = parts.join(' ') || null;
@@ -651,6 +656,7 @@ app.delete('/api/clientes/:id', auth, async (req, res) => {
     const conFacturas = await db.query('SELECT codigo FROM facturas WHERE cliente_id=$1 LIMIT 1', [id]);
     if (conFacturas.rows.length) return res.status(409).json({ error: `No se puede eliminar: el cliente tiene facturas (${conFacturas.rows[0].codigo}). Se conservan por contabilidad.` });
     const fotos = await appMovil.fotosDeCliente(db, id); // los archivos se borran después; las filas caen en cascada
+    const adjuntos = await documentos.documentosDe(db, { clienteId: id });
     tx = await db.connect();
     await tx.query('BEGIN');
     await tx.query('DELETE FROM etiquetas WHERE etiqueta_padre_id IN (SELECT id FROM etiquetas WHERE cliente_id=$1)', [id]);
@@ -658,6 +664,7 @@ app.delete('/api/clientes/:id', auth, async (req, res) => {
     await tx.query('DELETE FROM clientes WHERE id=$1', [id]);
     await tx.query('COMMIT');
     await appMovil.borrarArchivos(fotos);
+    await documentos.borrarDocumentos(db, adjuntos);
 
     await logAction(req.user.id, `Cliente ${old.rows[0].nombre} eliminado`, 'clientes', id, `Se eliminó el cliente ${old.rows[0].codigo_cliente || ''}.`);
     res.json({ ok: true, deletedId: pref('c', id) });
@@ -682,7 +689,8 @@ app.post('/api/admin/reassign-clients', auth, async (req, res) => {
     if (!targetIds.length) return res.status(400).json({ error: 'Selecciona al menos una asesora destino' });
 
     const source = await db.query('SELECT id,nombre,rol FROM usuarios WHERE id=$1', [sourceId]);
-    if (!source.rows.length || source.rows[0].rol !== 'asesora') return res.status(400).json({ error: 'La asesora de origen no es válida' });
+    // El administrador también puede tener clientes (los que registra él mismo) y repartirlos.
+    if (!source.rows.length || !['asesora', 'admin'].includes(source.rows[0].rol)) return res.status(400).json({ error: 'La asesora de origen no es válida' });
 
     const targets = await db.query("SELECT id,nombre FROM usuarios WHERE id=ANY($1::int[]) AND rol='asesora' AND activo=TRUE", [targetIds]);
     if (targets.rows.length !== targetIds.length) return res.status(400).json({ error: 'Todas las asesoras destino deben estar activas' });
@@ -903,6 +911,7 @@ app.delete('/api/etiquetas/:id', auth, async (req, res) => {
 
     const hijas = await db.query('SELECT id FROM etiquetas WHERE etiqueta_padre_id=$1', [id]);
     const fotos = await appMovil.fotosDeEtiquetas(db, [id, ...hijas.rows.map(h => h.id)]); // archivos a borrar tras el COMMIT
+    const adjuntos = await documentos.documentosDe(db, { etiquetaIds: [id, ...hijas.rows.map(h => h.id)] });
 
     if (client) await client.query('BEGIN');
     const q = (text, params) => client ? client.query(text, params) : db.query(text, params);
@@ -922,6 +931,7 @@ app.delete('/api/etiquetas/:id', auth, async (req, res) => {
     }
     if (client) await client.query('COMMIT');
     await appMovil.borrarArchivos(fotos);
+    await documentos.borrarDocumentos(db, adjuntos);
 
     await logAction(req.user.id, `Etiqueta ${old.rows[0].numero} eliminada`, 'etiquetas', id, `Se eliminó la etiqueta.`);
     res.json({ ok: true, deleted: deletedNumbers.length + 1 });
@@ -1220,6 +1230,8 @@ appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
 facturacion.registrar(app, { db, auth, intId, logAction, JWT_SECRET });
 importador.registrar(app, { db, auth, intId, logAction });
 require('./usuarios').registrar(app, { db, auth, intId, logAction, userOut, getBootstrap });
+require('./packing-ia').registrar(app, { auth, logAction });
+documentos.registrar(app, { db, auth, intId, logAction });
 
 /* ==========================================================================
    CATCH-ALL / SERVIR APLICACIÓN FRONTEND
