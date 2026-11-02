@@ -675,14 +675,19 @@
   const soloDigitos = (v) => String(v || '').replace(/\D/g, '');
   const sinTildes = (v) => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
-  /** Busca el comprador del packing list entre los clientes visibles: primero por RIF/cédula, luego por nombre o empresa. */
+  /**
+   * Busca el comprador del packing list entre los clientes visibles. Devuelve { cliente, seguro }: seguro solo cuando
+   * coinciden RIF/cédula Y nombre o empresa, porque los modelos a veces inventan el RIF o toman al vendedor por comprador.
+   */
   function clienteDelPacking(d) {
     const lista = typeof scopedClients === 'function' ? scopedClients() : db.clients;
     const rif = soloDigitos(d.rifComprador);
-    if (rif.length >= 6) { const c = lista.find((x) => soloDigitos(x.idNumber) === rif); if (c) return c; }
     const nombre = sinTildes(d.comprador);
-    if (nombre.length < 4) return null;
-    return lista.find((x) => [x.company, x.name].some((v) => { const s = sinTildes(v); return s.length >= 4 && (s === nombre || nombre.includes(s) || s.includes(nombre)); })) || null;
+    const mismoNombre = (x) => nombre.length >= 4 && [x.company, x.name].some((v) => { const s = sinTildes(v); return s.length >= 4 && (s === nombre || nombre.includes(s) || s.includes(nombre)); });
+    const porRif = rif.length >= 6 ? lista.find((x) => soloDigitos(x.idNumber) === rif) : null;
+    if (porRif) return { cliente: porRif, seguro: mismoNombre(porRif) };
+    const porNombre = lista.find(mismoNombre);
+    return porNombre ? { cliente: porNombre, seguro: false } : null;
   }
 
   function llenar(id, valor) {
@@ -730,13 +735,15 @@
     // Cliente: solo si todavía no hay uno elegido.
     let clienteTxt = '';
     if ($('mClient') && !$('mClient').value) {
-      const c = clienteDelPacking(d);
-      if (c) {
+      const hallado = clienteDelPacking(d);
+      const c = hallado?.cliente;
+      if (hallado?.seguro) {
         $('mClient').value = c.id;
         $('mClientSearch').value = fallbackClientLabel(c.id);
         $('mClient').dispatchEvent(new Event('change', { bubbles: true }));
         llenos.push('cliente');
-      } else if (d.comprador) clienteTxt = `<p class="fx-warn">No encontré al comprador «${esc(d.comprador)}»${d.rifComprador ? ` (${esc(d.rifComprador)})` : ''} entre los clientes: elígelo a mano.</p>`;
+      } else if (c) clienteTxt = `<p class="fx-warn">¿El comprador es <b>${esc(c.name)}</b> (${esc(c.code || '')})? Coincide solo ${soloDigitos(d.rifComprador) && soloDigitos(c.idNumber) === soloDigitos(d.rifComprador) ? 'el RIF' : 'el nombre'}: elígelo a mano si es correcto.</p>`;
+      else if (d.comprador) clienteTxt = `<p class="fx-warn">No encontré al comprador «${esc(d.comprador)}»${d.rifComprador ? ` (${esc(d.rifComprador)})` : ''} entre los clientes: elígelo a mano.</p>`;
     }
     // Lotes de la app del cliente: solo existen en una etiqueta ya guardada (y los ve el administrador).
     let lotesTxt = '';

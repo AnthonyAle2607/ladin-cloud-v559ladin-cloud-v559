@@ -174,7 +174,20 @@ function revisar(d) {
   });
   if (d.notas) avisos.push(`Nota de la IA: ${d.notas}`);
   const cajas = d.totales.cajas ?? sumas.cajas;
-  const cbm = d.totales.cbm ?? sumas.cbm;
+  let cbm = d.totales.cbm ?? sumas.cbm;
+  // Si el CBM del documento (o el que leyó la IA) no se parece al que dan las medidas de las cajas, se usa el de las
+  // medidas: pasa con columnas mal llenadas («0,000001») y con modelos que toman la columna equivocada.
+  const conMedidas = d.lineas.filter((l) => l.cajas > 0 && l.largoCm && l.anchoCm && l.altoCm);
+  // Solo si las cajas de esas líneas son exactamente las del documento: con cajas compartidas o duplicadas, las medidas engañan.
+  const cajasConMedidas = conMedidas.reduce((s, l) => s + l.cajas, 0);
+  if (conMedidas.length && (cajas == null || Math.abs(cajasConMedidas - cajas) < 0.5)) {
+    const cbmMedidas = conMedidas.reduce((s, l) => s + (l.largoCm * l.anchoCm * l.altoCm / 1e6) * l.cajas, 0);
+    if (cbmMedidas > 0 && (cbm == null || cbm < cbmMedidas * 0.5 || cbm > cbmMedidas * 2)) {
+      avisos.push(`Se usó el CBM calculado con las medidas de las cajas (${redondear(cbmMedidas)}) porque el del documento (${cbm == null ? 'sin dato' : redondear(cbm)}) no cuadra.`);
+      cbm = cbmMedidas;
+    }
+  }
+  if (/[㐀-鿿]/.test(d.mercancia)) avisos.push(`La mercancía quedó en chino («${d.mercancia}»): escríbela en español.`);
   // Lotes de la app del cliente: una línea con cajas propias = un lote. Las cajas compartidas (6.5 + 6.5) se redondean
   // sobre el acumulado para que la suma de lotes siga dando el total del documento (13, no 7 + 7 = 14).
   let acumulado = 0;
