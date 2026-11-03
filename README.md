@@ -26,10 +26,15 @@ V546: detalles de contenedor con CBM Totales para administradores y etiquetas as
 Código en `app-movil.js`. Los clientes entran con su **código de cliente** (`LC-CLI-000001`) y una **clave** que define el personal; su token (`typ: cliente`) solo sirve en `/api/app/*`, y el token del personal no sirve ahí.
 
 **Rutas de la app** (con `Authorization: Bearer <token>`; cada consulta se limita al cliente de la sesión):
-`POST /api/app/login` · `GET /api/app/etiquetas` · `GET /api/app/etiquetas/:id` · `GET /api/app/fotos/:id` · `GET /api/app/avisos` · `GET|PUT /api/app/preferencias` · `POST /api/app/dispositivos`
+`POST /api/app/login` · `GET /api/app/version` · `GET /api/app/perfil` · `GET /api/app/etiquetas` · `GET /api/app/etiquetas/:id` · `GET /api/app/fotos/:id` · `GET /api/app/avisos` · `GET|PUT /api/app/preferencias` · `POST /api/app/dispositivos`
 
 **Rutas del personal** que la alimentan (admin o la asesora del cliente):
 - `PUT /api/clientes/:id/clave` — `{ clave }` (mínimo 8 caracteres) crea o cambia el acceso del cliente a la app.
+- `DELETE /api/clientes/:id/clave` — quita el acceso: la sesión del teléfono deja de valer y se borran sus tokens push.
+
+En el panel se hace desde la ficha del cliente, «Acceso a la app móvil» (genera la clave y la muestra una sola vez, con copiar y enviar por WhatsApp). `bootstrap` indica `appAccess` por cliente.
+
+**Datos en vivo:** la app consulta `GET /api/app/version` (huella de las etiquetas, contenedores, lotes, fotos, avisos y datos del cliente) cada 15 s y recarga si cambió; el panel vuelve a pedir `/api/bootstrap` cada 20 s (`public/envivo.js`) y repinta solo si hay cambios y no hay una ventana abierta ni se está escribiendo. Es consulta periódica a propósito: en Vercel no se mantienen conexiones abiertas.
 - `PUT /api/etiquetas/:id/lotes` — `{ lotes: [{ nombre, cajas, kgPorCaja, largoCm, anchoCm, altoCm }] }` reemplaza los lotes (el peso total se calcula).
 - `POST /api/etiquetas/:id/fotos` — multipart con `fotos` (JPG/PNG, máx. 10 de 8 MB), `titulo`, `lugar`. Se validan por sus bytes y se guardan en `uploads/etiquetas/` (no público).
 - `DELETE /api/etiquetas/:id/fotos/:fotoId`

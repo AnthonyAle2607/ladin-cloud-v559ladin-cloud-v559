@@ -147,7 +147,8 @@ function clientOut(r) {
     firstContactDate: r.fecha_primer_contacto ? String(r.fecha_primer_contacto).slice(0, 10) : '',
     createdAt: r.fecha_registro?.toISOString?.().slice(0, 10) || String(r.fecha_registro || '').slice(0, 10),
     updatedAt: r.fecha_actualizacion?.toISOString?.().slice(0, 10) || String(r.fecha_actualizacion || r.fecha_registro || '').slice(0, 10),
-    notes: r.observaciones || ''
+    notes: r.observaciones || '',
+    appAccess: !!r.clave_hash // solo si tiene clave para la app móvil; el hash nunca sale del servidor
   };
 }
 

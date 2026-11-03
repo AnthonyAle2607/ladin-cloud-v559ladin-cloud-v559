@@ -581,20 +581,63 @@
      ===================================================================================================== */
 
   const clientModalOriginal = window.clientModal;
+  // Sin letras que se confunden (0/O, 1/l/I) para que el cliente la escriba sin errores.
+  const ALFABETO = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const claveNueva = () => Array.from(crypto.getRandomValues(new Uint32Array(10)), (n) => ALFABETO[n % ALFABETO.length]).join('');
+
   window.clientModal = function (existing = null) {
     clientModalOriginal(existing);
-    if (!existing || !isAdmin()) return;
+    // La asesora del cliente también puede darle acceso (el servidor lo permite solo para sus clientes).
+    if (!existing || !(isAdmin() || existing.advisorId === me()?.id)) return;
     const cuerpo = document.querySelector('#modal .modal-body');
     if (!cuerpo) return;
-    cuerpo.insertAdjacentHTML('beforeend', `<div class="fx-box" style="margin-top:14px"><h3>Acceso a la app móvil</h3>
-      <p class="fx-muted" style="margin:0 0 8px">El cliente entra a la app con su código <b>${esc(existing.code || '—')}</b> y la clave que definas aquí (mínimo 8 caracteres). Si ya tenía una, se reemplaza.</p>
-      <div class="fx-grid">${field('fxAppClave', 'Clave de la app', '', 'password', 'autocomplete="new-password" minlength="8"')}</div>
-      <div class="row" style="margin-top:8px"><button class="btn btn-secondary btn-sm" id="fxAppGuardar" type="button">Definir clave</button></div></div>`);
-    $('fxAppGuardar').onclick = async () => {
-      const clave = $('fxAppClave').value;
-      if (clave.length < 8) return aviso('La clave debe tener al menos 8 caracteres');
-      try { await api(`/api/clientes/${encodeURIComponent(existing.id)}/clave`, { method: 'PUT', body: JSON.stringify({ clave }) }); $('fxAppClave').value = ''; aviso('Clave de la app guardada'); } catch (e) { aviso(e.message); }
+    cuerpo.insertAdjacentHTML('beforeend', '<div class="fx-box" id="fxAcceso" style="margin-top:14px"></div>');
+    let activo = !!existing.appAccess;
+    const pintar = (claveMostrada = '') => {
+      const caja = $('fxAcceso');
+      if (!caja) return;
+      const tel = String(existing.phone || '').replace(/D/g, '');
+      const mensaje = `Hola ${existing.name}, ya puedes seguir tu carga en la app de Criollo Cargo.
+Código de cliente: ${existing.code}
+Clave: ${claveMostrada}`;
+      caja.innerHTML = `<h3>Acceso a la app móvil</h3>
+        <p style="margin:0 0 8px">${activo ? '<span class="fx-pill pagada">Con acceso</span>' : '<span class="fx-pill pendiente">Sin acceso</span>'}
+          <span class="fx-muted">El cliente entra con su código <b>${esc(existing.code || '—')}</b> y una clave. Ve las mismas etiquetas, fotos y datos del panel, y se actualizan solas.</span></p>
+        ${claveMostrada ? `<div class="fx-box" style="margin:8px 0"><b>Clave nueva:</b> <code id="fxClaveVista" style="font-size:16px">${esc(claveMostrada)}</code>
+          <p class="fx-muted" style="margin:6px 0">Entrégasela ahora al cliente: no se vuelve a mostrar.</p>
+          <div class="row"><button class="btn btn-secondary btn-sm" id="fxClaveCopiar" type="button">Copiar código y clave</button>
+          ${tel ? `<a class="btn btn-secondary btn-sm" target="_blank" rel="noopener" href="https://wa.me/${esc(tel)}?text=${encodeURIComponent(mensaje)}">Enviar por WhatsApp</a>` : ''}</div></div>` : ''}
+        <div class="fx-grid">${field('fxAppClave', 'Clave propia (opcional, mínimo 8)', '', 'password', 'autocomplete="new-password" minlength="8"')}</div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn btn-primary btn-sm" id="fxAppGenerar" type="button">${activo ? 'Generar clave nueva' : 'Dar acceso (generar clave)'}</button>
+          <button class="btn btn-secondary btn-sm" id="fxAppGuardar" type="button">Usar la clave escrita</button>
+          ${activo ? '<button class="btn btn-secondary btn-sm" id="fxAppQuitar" type="button">Quitar acceso</button>' : ''}
+        </div>
+        ${activo ? '<p class="fx-muted" style="margin:6px 0 0">Al cambiar la clave o quitar el acceso, la sesión abierta en el teléfono se cierra.</p>' : ''}`;
+      const definir = async (clave) => {
+        if (clave.length < 8) return aviso('La clave debe tener al menos 8 caracteres');
+        try {
+          await api(`/api/clientes/${encodeURIComponent(existing.id)}/clave`, { method: 'PUT', body: JSON.stringify({ clave }) });
+          activo = existing.appAccess = true;
+          const c = db.clients.find((x) => x.id === existing.id); if (c) c.appAccess = true;
+          aviso('Acceso a la app activado'); pintar(clave);
+        } catch (e) { aviso(e.message); }
+      };
+      $('fxAppGenerar').onclick = () => definir(claveNueva());
+      $('fxAppGuardar').onclick = () => definir($('fxAppClave').value);
+      if ($('fxClaveCopiar')) $('fxClaveCopiar').onclick = () => navigator.clipboard.writeText(`Código: ${existing.code}
+Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo copiar: selecciónala a mano'));
+      if ($('fxAppQuitar')) $('fxAppQuitar').onclick = async () => {
+        if (!confirm(`¿Quitar el acceso a la app de ${existing.name}? Su sesión en el teléfono se cerrará.`)) return;
+        try {
+          await api(`/api/clientes/${encodeURIComponent(existing.id)}/clave`, { method: 'DELETE' });
+          activo = existing.appAccess = false;
+          const c = db.clients.find((x) => x.id === existing.id); if (c) c.appAccess = false;
+          aviso('Acceso quitado'); pintar();
+        } catch (e) { aviso(e.message); }
+      };
     };
+    pintar();
   };
 
   /* =====================================================================================================
