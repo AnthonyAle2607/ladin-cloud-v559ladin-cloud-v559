@@ -128,6 +128,23 @@ Estados del pedido: `pendiente_pago → pago_reportado → pagado → en_camino 
 4. **Después:** avisos por WhatsApp o correo al cambiar el pedido, enlazar pedido pagado con cliente y etiqueta,
    pasarela de pago si se decide, opiniones reales.
 
+## Carga masiva de productos (Excel o CSV)
+
+`tienda-lote.js` (panel → Productos → «Carga masiva (Excel)»). Una fila por producto; la plantilla trae las columnas,
+dos ejemplos y una hoja de instrucciones (`GET /api/tienda/admin/lote/plantilla`).
+
+- **Revisar sin guardar** (`POST …/lote/analizar`): cada fila se valida con su número de fila (precio, cupos por
+  variante, contenedor existente, nombres repetidos) y se indica si se **crea** o se **actualiza** (mismo nombre).
+- **Cargar por tandas** de 25 (`POST …/lote/aplicar`) para no pasar el límite de 30 s de Vercel. Al actualizar, las
+  variantes se emparejan por nombre (no se duplican) y las celdas vacías no borran categoría ni contenedor. Las
+  categorías nuevas se crean solas. Las fotos (enlaces de 1688/Alibaba/Taobao/Yiwugo) se traen después, una por una,
+  solo si el producto aún no tiene fotos.
+- Guarda con la misma validación que el formulario (`persistirProducto` de `tienda.js`).
+
+Corrección (noviembre 2026): un campo vacío («sin categoría», «sin contenedor») llegaba como id 0 y Postgres
+rechazaba el producto por la llave foránea (en SQLite no se notaba). `intId` ahora devuelve null para vacío o 0.
+Probado contra Postgres 17 con las migraciones, como en Supabase.
+
 ## Importador de productos de mercados chinos
 
 `importador-1688.js` (panel → Productos → «Importar desde 1688»). Arma un **borrador sin publicar**: nombre, variantes,
@@ -146,6 +163,9 @@ revisa, pone cupo y contenedor, y publica.
 - **Velocidad:** usa primero los modelos «lite» (`IMPORT_IA_MODELO` para fijar otro orden): una ficha se lee en
   4–10 s; con el modelo que razona tardaba ~30 s, al límite de Vercel.
 - Probado con una ficha real de 1688 (texto y captura). La tienda pública no expone el origen ni el costo.
+- «Crear y seguir con otro» encadena varios productos sin cerrar la ventana; con API configurada, se pueden pegar
+  varios enlaces (uno por línea) y cada uno queda como borrador. Si falta la migración 20261104, el producto se guarda
+  igual (sin su enlace de origen) y el panel lo avisa.
 
 ## Pendiente de decidir
 

@@ -99,7 +99,7 @@
     const sinCupo = publicados.filter((p) => !p.variantes.some((v) => v.activa && v.cupo > 0));
     page().innerHTML = `
       <div class="page-head"><div><h1>Productos de la tienda</h1><p>Preventa de la web: cada producto viaja en un contenedor y tiene un cupo por variante.</p></div>
-        <div class="row"><button class="btn btn-secondary" id="wtCategorias">Categorías</button><button class="btn btn-secondary" id="wtDestinos">Destinos</button><button class="btn btn-secondary" id="wtImportar">Importar desde 1688</button><button class="btn btn-primary" id="wtNuevo">Nuevo producto</button></div></div>
+        <div class="row"><button class="btn btn-secondary" id="wtCategorias">Categorías</button><button class="btn btn-secondary" id="wtDestinos">Destinos</button><button class="btn btn-secondary" id="wtLote">Carga masiva (Excel)</button><button class="btn btn-secondary" id="wtImportar">Importar desde 1688</button><button class="btn btn-primary" id="wtNuevo">Nuevo producto</button></div></div>
       <div class="fx-kpis">
         <div class="fx-kpi"><span>Publicados</span><b>${publicados.length}</b><small>de ${productos.length} producto(s)</small></div>
         <div class="fx-kpi"><span>Agotados</span><b>${sinCupo.length}</b><small>publicados sin cupo</small></div>
@@ -115,6 +115,7 @@
     $('wtCat').onchange = (e) => { filtroCat = e.target.value; pintarProductos(); };
     $('wtNuevo').onclick = () => productoModal();
     $('wtImportar').onclick = importarModal;
+    $('wtLote').onclick = loteModal;
     $('wtCategorias').onclick = categoriasModal;
     $('wtDestinos').onclick = destinosModal;
   }
@@ -230,6 +231,85 @@
     }));
   }
 
+  /* ---------- Carga masiva desde Excel o CSV (tienda-lote.js) ---------- */
+
+  function loteModal() {
+    openModal('Carga masiva de productos', `
+      <p class="fx-muted" style="margin:0 0 10px">Una fila por producto. Si el nombre ya existe, se <b>actualiza</b> (precio, cupo, textos, variantes); si no, se <b>crea</b>. Primero se revisa el archivo y nada se guarda hasta que confirmes.</p>
+      <div class="row" style="margin-bottom:10px"><button class="btn btn-secondary btn-sm" id="wtLotePlantilla" type="button">Descargar plantilla Excel</button><span class="fx-muted">Trae las columnas, dos ejemplos y una hoja de instrucciones.</span></div>
+      <div class="fx-grid"><div class="field"><label for="wtLoteArchivo">Archivo (.xlsx o .csv)</label><input type="file" id="wtLoteArchivo" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"></div></div>
+      <div id="wtLoteResultado"></div>`,
+      '<button class="btn btn-secondary" id="modalCancel">Cerrar</button><button class="btn btn-primary" id="wtLoteRevisar">Revisar archivo</button>');
+    $('modalCancel').onclick = () => { closeModal(); if (sigueEn('webProductos')) mostrarProductos(); };
+    $('wtLotePlantilla').onclick = async () => {
+      try {
+        const r = await fetch('/api/tienda/admin/lote/plantilla', { headers: { Authorization: `Bearer ${session.token}` } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const url = URL.createObjectURL(await r.blob());
+        const a = document.createElement('a');
+        a.href = url; a.download = 'plantilla-tienda-criollo-cargo.xlsx'; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      } catch (e) { toast(`No se pudo descargar la plantilla: ${e.message}`); }
+    };
+    $('wtLoteRevisar').onclick = async () => {
+      const archivo = $('wtLoteArchivo').files?.[0];
+      if (!archivo) return toast('Elige el archivo');
+      const datos = new FormData();
+      datos.append('archivo', archivo);
+      const boton = $('wtLoteRevisar');
+      boton.disabled = true; boton.textContent = 'Revisando…';
+      try {
+        const r = await fetch('/api/tienda/admin/lote/analizar', { method: 'POST', headers: { Authorization: `Bearer ${session.token}` }, body: datos });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        mostrarLote(j);
+      } catch (e) { $('wtLoteResultado').innerHTML = `<p class="fx-bad">${esc(e.message)}</p>`; }
+      finally { boton.disabled = false; boton.textContent = 'Revisar de nuevo'; }
+    };
+  }
+
+  function mostrarLote({ filas, resumen, columnas, porTanda }) {
+    const validas = filas.filter((f) => !f.errores.length);
+    const cupo = (f) => f.datos.variantes.reduce((s, v) => s + (Number(v.cupo) || 0), 0);
+    $('wtLoteResultado').innerHTML = `<div class="fx-box" style="margin-top:12px">
+      <h3>${resumen.total} fila(s): ${resumen.validas} lista(s) — ${resumen.crear} nueva(s) y ${resumen.actualizar} a actualizar${resumen.total - resumen.validas ? ` · <span class="fx-bad">${resumen.total - resumen.validas} con errores</span>` : ''}</h3>
+      <p class="fx-muted" style="margin:0 0 8px">Columnas reconocidas: ${columnas.map(esc).join(', ')}.</p>
+      <div class="fx-scroll" style="max-height:340px;overflow:auto"><table class="table"><thead><tr><th>Fila</th><th>Producto</th><th class="fx-num">Precio</th><th>Variantes</th><th class="fx-num">Cupo</th><th>Web</th><th>Resultado</th></tr></thead><tbody>
+        ${filas.map((f) => `<tr id="wtLoteFila${f.fila}"><td>${f.fila}</td><td><b>${esc(f.datos.nombre || '—')}</b>${f.categoria ? `<br><small class="fx-muted">${esc(f.categoria)}</small>` : ''}</td>
+          <td class="fx-num">${f.datos.precioUsd > 0 ? usd(f.datos.precioUsd) : '—'}</td><td>${esc(f.datos.variantes.map((v) => v.nombre).join(', '))}</td><td class="fx-num">${cupo(f)}</td>
+          <td>${f.datos.activo ? 'Publicar' : 'Borrador'}</td>
+          <td data-estado>${f.errores.length ? `<span class="fx-bad">${f.errores.map(esc).join('<br>')}</span>` : `${f.accion === 'crear' ? 'Se crea' : 'Se actualiza'}${f.avisos.length ? `<br><small class="fx-warn">${f.avisos.map(esc).join('<br>')}</small>` : ''}`}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="row" style="margin-top:10px"><button class="btn btn-primary" id="wtLoteCargar" type="button" ${validas.length ? '' : 'disabled'}>Cargar ${validas.length} producto(s)</button><span class="fx-muted" id="wtLoteProgreso"></span></div></div>`;
+    $('wtLoteCargar').onclick = async () => {
+      const boton = $('wtLoteCargar');
+      boton.disabled = true; $('wtLoteRevisar').disabled = true;
+      const progreso = $('wtLoteProgreso');
+      const marcar = (fila, html) => { const c = document.querySelector(`#wtLoteFila${fila} [data-estado]`); if (c) c.innerHTML = html; };
+      let hechas = 0, fallas = 0;
+      const conFotos = [];
+      // Por tandas: cada llamada cabe en el límite de tiempo de Vercel.
+      for (let i = 0; i < validas.length; i += porTanda) {
+        const tanda = validas.slice(i, i + porTanda);
+        progreso.textContent = `Guardando ${Math.min(i + tanda.length, validas.length)} de ${validas.length}…`;
+        try {
+          const r = await api('/api/tienda/admin/lote/aplicar', { method: 'POST', body: JSON.stringify({ filas: tanda.map((f) => ({ fila: f.fila, datos: f.datos, categoria: f.categoria, contenedor: f.contenedor, fotos: f.fotos })) }) });
+          for (const x of r.resultados) {
+            if (x.ok) { hechas++; marcar(x.fila, `<span class="fx-pill pagada">${x.accion === 'creado' ? 'Creado' : 'Actualizado'}</span>${x.aviso ? `<br><small class="fx-warn">${esc(x.aviso)}</small>` : ''}`); if (x.traerFotos) conFotos.push({ id: x.id, fila: x.fila, urls: tanda.find((f) => f.fila === x.fila)?.fotos || [] }); }
+            else { fallas++; marcar(x.fila, `<span class="fx-bad">${esc(x.error)}</span>`); }
+          }
+        } catch (e) { fallas += tanda.length; tanda.forEach((f) => marcar(f.fila, `<span class="fx-bad">${esc(e.message)}</span>`)); }
+      }
+      for (const [n, p] of conFotos.entries()) {
+        progreso.textContent = `Trayendo fotos ${n + 1} de ${conFotos.length}…`;
+        try { const f = await api(`/api/tienda/admin/productos/${encodeURIComponent(p.id)}/imagenes-remotas`, { method: 'POST', body: JSON.stringify({ urls: p.urls }) }); const c = document.querySelector(`#wtLoteFila${p.fila} [data-estado]`); if (c) c.insertAdjacentHTML('beforeend', `<br><small class="fx-muted">${f.guardadas} de ${f.pedidas} foto(s)</small>`); } catch (_) { /* las fotos se pueden subir luego */ }
+      }
+      progreso.textContent = `Listo: ${hechas} producto(s) guardados${fallas ? `, ${fallas} con error` : ''}.`;
+      toast(`Carga masiva: ${hechas} producto(s) guardados${fallas ? `, ${fallas} con error` : ''}`);
+      $('wtLoteRevisar').disabled = false;
+    };
+  }
+
   /* ---------- Importar desde 1688 (importador-1688.js) ---------- */
 
   async function importarModal() {
@@ -239,7 +319,8 @@
       <p class="fx-muted" style="margin:0 0 10px">Arma un <b>borrador sin publicar</b> con el nombre y la descripción traducidos y un precio sugerido. Tú lo revisas, pones el cupo y el contenedor, y lo publicas.</p>
       ${estado.ia ? '' : '<p class="fx-bad">La IA no está configurada en el servidor (IA_PROVEEDOR e IA_API_KEY): el importador no puede leer productos.</p>'}
       <div class="fx-grid">${field('wtImpUrl', 'Enlace del producto (1688, Taobao, Yiwugo…)', '', 'url', 'placeholder="https://detail.1688.com/offer/…html"')}${field('wtImpCantidad', 'Cantidad que piensas comprar', '100', 'number', 'min="1" step="1" title="Elige el precio por cantidad que aplica"')}</div>
-      <p class="fx-muted" style="margin:6px 0 10px">${estado.api ? 'Con el enlace basta: el servidor consulta la API del proveedor de datos.' : 'Aún no hay API de un proveedor de datos: el enlace se guarda como referencia. Sube <b>capturas</b> de la página (precio por cantidad, variantes y la tabla de la caja, 装箱) o <b>pega el texto</b> de la página.'}</p>
+      <p class="fx-muted" style="margin:6px 0 10px">${estado.api ? 'Con el enlace basta: el servidor consulta la API del proveedor de datos. Para varios a la vez, pega abajo un enlace por línea.' : 'Aún no hay API de un proveedor de datos: el enlace se guarda como referencia. Sube <b>capturas</b> de la página (precio por cantidad, variantes y la tabla de la caja, 装箱) o <b>pega el texto</b> de la página. Con «Crear y seguir con otro» encadenas varios sin cerrar esta ventana.'}</p>
+      ${estado.api ? `<div class="fx-grid"><div class="field"><label for="wtImpVarios">Varios enlaces (uno por línea)</label><textarea id="wtImpVarios" rows="3" maxlength="20000" placeholder="https://detail.1688.com/offer/…html"></textarea></div></div>` : ''}
       <div class="fx-grid">
         <div class="field"><label for="wtImpCapturas">Capturas de la página (hasta 4)</label><input type="file" id="wtImpCapturas" accept="image/jpeg,image/png,image/webp" multiple></div>
         <div class="field"><label for="wtImpTexto">Texto copiado de la página (opcional)</label><textarea id="wtImpTexto" rows="4" maxlength="40000" placeholder="Ctrl+A y Ctrl+C en la página del producto, y pega aquí"></textarea></div>
@@ -248,6 +329,13 @@
       `<button class="btn btn-secondary" id="modalCancel">Cancelar</button><button class="btn btn-primary" id="wtImpLeer" ${estado.ia ? '' : 'disabled'}>Leer producto</button>`);
     $('modalCancel').onclick = closeModal;
     $('wtImpLeer').onclick = async () => {
+      const varios = ($('wtImpVarios')?.value || '').split(/\s+/).filter((u) => /^https?:\/\//.test(u)).slice(0, 50);
+      if (varios.length) {
+        const boton = $('wtImpLeer');
+        boton.disabled = true;
+        try { await importarVariosEnlaces(varios, Number($('wtImpCantidad').value) || 100); } finally { boton.disabled = false; boton.textContent = 'Leer producto'; }
+        return;
+      }
       const datos = new FormData();
       const url = $('wtImpUrl').value.trim();
       const texto = $('wtImpTexto').value.trim();
@@ -295,33 +383,76 @@
       ${d.descripcion.length ? `<p class="fx-muted" style="margin:6px 0">${d.descripcion.map(esc).join('<br>')}</p>` : ''}
       ${d.especificaciones.length ? `<p class="fx-muted" style="margin:6px 0">${d.especificaciones.map(esc).join(' · ')}</p>` : ''}
       <p class="fx-muted" style="margin:6px 0">${d.imagenes.length} foto(s) del proveedor${d.imagenes.length ? ': se intentarán traer al borrador' : ''}.</p>
-      <div class="row" style="margin-top:10px"><button class="btn btn-primary" id="wtImpCrear" type="button">Crear borrador</button></div></div>`;
-    $('wtImpCrear').onclick = async () => {
-      const boton = $('wtImpCrear');
+      <div class="row" style="margin-top:10px"><button class="btn btn-primary" id="wtImpCrear" type="button">Crear borrador y revisarlo</button><button class="btn btn-secondary" id="wtImpSeguir" type="button">Crear y seguir con otro</button></div></div>`;
+    const crear = async (seguir) => {
       const nombre = $('wtImpNombre').value.trim();
       const precio = Number($('wtImpPrecio').value);
       if (!nombre) return toast('Escribe el nombre');
       if (!(precio > 0)) return toast('Indica el precio de venta');
-      boton.disabled = true; boton.textContent = 'Creando…';
+      const botones = [$('wtImpCrear'), $('wtImpSeguir')];
+      botones.forEach((b) => { b.disabled = true; });
       try {
-        const r = await api('/api/tienda/admin/productos', { method: 'POST', body: JSON.stringify({
-          nombre, categoriaId: $('wtImpCategoria').value, contenedorId: $('wtImpContenedor').value, origen: d.origen || '',
-          precioUsd: precio, nombreVariante: d.nombreVariante || 'Presentación', descripcion: d.descripcion, especificaciones: d.especificaciones, activo: false,
-          // El cupo lo decide el equipo: el borrador nace en 0 y sin publicar.
-          variantes: d.variantes.length ? d.variantes.map((v) => ({ nombre: v.nombre, cupo: 0, precioUsd: v.precioSugeridoUsd || null })) : [{ nombre: 'Única', cupo: 0 }],
-          fuenteUrl: d.url || urlPegada || '',
-          costoReferencia: { proveedor: d.proveedor, moneda: d.moneda, precios: d.precios, paquete: d.paquete, medidasUnidad: d.medidasUnidad, desglose: sugerido?.desglose || null, pedidoMinimo: d.pedidoMinimo, nombreOriginal: d.nombreOriginal },
-        }) });
-        let fotosTexto = '';
-        if (d.imagenes.length) {
-          try { const f = await api(`/api/tienda/admin/productos/${encodeURIComponent(r.id)}/imagenes-remotas`, { method: 'POST', body: JSON.stringify({ urls: d.imagenes }) }); fotosTexto = ` y ${f.guardadas} de ${f.pedidas} foto(s)`; } catch (_) { fotosTexto = ' (las fotos no se pudieron traer)'; }
+        const r = await crearBorradorImportado(d, sugerido, urlPegada, { nombre, precioUsd: precio, categoriaId: $('wtImpCategoria').value, contenedorId: $('wtImpContenedor').value });
+        toast(`Borrador «${nombre}» creado${r.fotosTexto}.${r.aviso ? ` ${r.aviso}` : ''}`);
+        if (seguir) {
+          // Listo para el siguiente producto, sin cerrar la ventana.
+          ['wtImpUrl', 'wtImpTexto'].forEach((id) => { $(id).value = ''; });
+          $('wtImpCapturas').value = '';
+          $('wtImpResultado').innerHTML = `<p class="aviso-ok" style="color:var(--green)">✔ «${esc(nombre)}» quedó como borrador. Sube el siguiente.</p>`;
+          $('wtImpUrl').focus();
+          return;
         }
-        toast(`Borrador creado${fotosTexto}. Revisa, pon el cupo y publícalo.`);
         await mostrarProductos();
         const nuevo = productos.find((x) => x.id === r.id);
         if (nuevo) productoModal(nuevo); else closeModal();
-      } catch (e) { toast(e.message); boton.disabled = false; boton.textContent = 'Crear borrador'; }
+      } catch (e) { toast(e.message); botones.forEach((b) => { if (b) b.disabled = false; }); }
     };
+    $('wtImpCrear').onclick = () => crear(false);
+    $('wtImpSeguir').onclick = () => crear(true);
+  }
+
+  /** Crea el borrador (sin publicar, cupo 0) de un producto leído por el importador y trae sus fotos. */
+  async function crearBorradorImportado(d, sugerido, urlPegada, cambios = {}) {
+    const r = await api('/api/tienda/admin/productos', { method: 'POST', body: JSON.stringify({
+      nombre: d.nombre, categoriaId: '', contenedorId: '', origen: d.origen || '',
+      precioUsd: sugerido?.precioUsd, nombreVariante: d.nombreVariante || 'Presentación', descripcion: d.descripcion, especificaciones: d.especificaciones, activo: false,
+      // El cupo lo decide el equipo: el borrador nace en 0 y sin publicar.
+      variantes: d.variantes.length ? d.variantes.map((v) => ({ nombre: v.nombre, cupo: 0, precioUsd: v.precioSugeridoUsd || null })) : [{ nombre: 'Única', cupo: 0 }],
+      fuenteUrl: d.url || urlPegada || '',
+      costoReferencia: { proveedor: d.proveedor, moneda: d.moneda, precios: d.precios, paquete: d.paquete, medidasUnidad: d.medidasUnidad, desglose: sugerido?.desglose || null, pedidoMinimo: d.pedidoMinimo, nombreOriginal: d.nombreOriginal },
+      ...cambios,
+    }) });
+    let fotosTexto = '';
+    if (d.imagenes.length) {
+      try { const f = await api(`/api/tienda/admin/productos/${encodeURIComponent(r.id)}/imagenes-remotas`, { method: 'POST', body: JSON.stringify({ urls: d.imagenes }) }); fotosTexto = ` con ${f.guardadas} de ${f.pedidas} foto(s)`; } catch (_) { fotosTexto = ' (las fotos no se pudieron traer)'; }
+    }
+    return { ...r, fotosTexto };
+  }
+
+  /** Con API del proveedor de datos: una lista de enlaces se convierte en borradores, uno tras otro. */
+  async function importarVariosEnlaces(urls, cantidad) {
+    const caja = $('wtImpResultado');
+    caja.innerHTML = `<div class="fx-box" style="margin-top:12px"><h3>Importando ${urls.length} enlace(s)</h3><ol id="wtImpLista" style="margin:0;padding-left:20px"></ol><p class="fx-muted" id="wtImpProgreso"></p></div>`;
+    let ok = 0;
+    for (const [i, url] of urls.entries()) {
+      $('wtImpProgreso').textContent = `Leyendo ${i + 1} de ${urls.length}…`;
+      const li = document.createElement('li');
+      li.textContent = url;
+      $('wtImpLista').appendChild(li);
+      try {
+        const datos = new FormData();
+        datos.append('url', url);
+        datos.append('cantidad', String(cantidad));
+        const r = await fetch('/api/tienda/admin/importar', { method: 'POST', headers: { Authorization: `Bearer ${session.token}` }, body: datos });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        if (!j.sugerido) throw new Error('sin precio: impórtalo con capturas');
+        const b = await crearBorradorImportado(j.datos, j.sugerido, url);
+        ok++;
+        li.innerHTML = `<b>${esc(j.datos.nombre)}</b> · $${j.sugerido.precioUsd}${esc(b.fotosTexto)} <span class="fx-pill pagada">Borrador</span>`;
+      } catch (e) { li.innerHTML = `${esc(url)} <span class="fx-bad">${esc(e.message)}</span>`; }
+    }
+    $('wtImpProgreso').textContent = `Listo: ${ok} de ${urls.length} borrador(es). Revísalos en la lista de productos, pon el cupo y publícalos.`;
   }
 
   function categoriasModal() {
