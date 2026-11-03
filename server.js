@@ -90,8 +90,11 @@ const loginLimiter = rateLimit({
 
 function intId(v) {
   if (v == null) return null;
-  const n = Number(String(v).replace(/^[a-z]+/i, ''));
-  return Number.isInteger(n) ? n : null;
+  const s = String(v).trim().replace(/^[a-z]+/i, '');
+  // Vacío o 0 no es un id: Number('') da 0, y en Postgres un 0 rompe las llaves foráneas (p. ej. «sin categoría»).
+  if (s === '') return null;
+  const n = Number(s);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 function pref(prefix, n) {
@@ -1250,7 +1253,8 @@ documentos.registrar(app, { db, auth, intId, logAction });
    ========================================================================== */
 
 webPublica.registrar(app, { db, auth, intId, logAction });
-tienda.registrar(app, { db, auth, intId, logAction });
+const tiendaApi = tienda.registrar(app, { db, auth, intId, logAction });
+require('./tienda-lote').registrar(app, { db, auth, logAction, ...tiendaApi }); // carga masiva desde Excel/CSV
 require('./importador-1688').registrar(app, { auth, logAction }); // borradores de productos desde 1688 y otros mercados chinos
 
 /* ==========================================================================

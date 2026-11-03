@@ -433,33 +433,37 @@ function registrar(app, { db, auth, intId, logAction }) {
     }
   });
 
-  /** Crea (sin id) o actualiza un producto con sus variantes. Las variantes que no vengan en la lista se desactivan. */
-  async function guardarProducto(req, res, id) {
-    const b = req.body || {};
+  /**
+   * Crea (sin id) o actualiza un producto con sus variantes. Las variantes que no vengan en la lista se desactivan.
+   * Devuelve { status, body } para que la usen tanto la ruta de un producto como la carga masiva.
+   */
+  async function persistirProducto(b, id, usuarioId) {
+    const fallo = (status, error) => ({ status, body: { error } });
     const nombre = texto(b.nombre, 150);
     const precio = Number(b.precioUsd);
     const antes = b.precioAntesUsd == null || b.precioAntesUsd === '' ? null : Number(b.precioAntesUsd);
-    if (!nombre) return res.status(400).json({ error: 'El nombre es obligatorio' });
-    if (!(precio > 0)) return res.status(400).json({ error: 'El precio debe ser mayor que cero' });
-    if (antes != null && !(antes > precio)) return res.status(400).json({ error: 'El precio anterior debe ser mayor que el actual' });
+    if (!nombre) return fallo(400, 'El nombre es obligatorio');
+    if (!(precio > 0)) return fallo(400, 'El precio debe ser mayor que cero');
+    if (antes != null && !(antes > precio)) return fallo(400, 'El precio anterior debe ser mayor que el actual');
     const variantes = Array.isArray(b.variantes) ? b.variantes.slice(0, 20) : [];
-    if (!variantes.length) return res.status(400).json({ error: 'Agrega al menos una variante (aunque sea única)' });
+    if (!variantes.length) return fallo(400, 'Agrega al menos una variante (aunque sea única)');
     for (const v of variantes) {
-      if (!texto(v?.nombre, 80)) return res.status(400).json({ error: 'Cada variante necesita un nombre' });
-      if (!(Number.isInteger(Number(v?.cupo)) && Number(v.cupo) >= 0)) return res.status(400).json({ error: 'El cupo de cada variante debe ser un número entero' });
+      if (!texto(v?.nombre, 80)) return fallo(400, 'Cada variante necesita un nombre');
+      if (!(Number.isInteger(Number(v?.cupo)) && Number(v.cupo) >= 0)) return fallo(400, 'El cupo de cada variante debe ser un número entero');
     }
     const slug = slugDe(b.slug || nombre) || `producto-${Date.now()}`;
     const lista = (v) => JSON.stringify((Array.isArray(v) ? v : String(v || '').split('\n')).map((x) => texto(x, 500)).filter(Boolean).slice(0, 20));
     const valores = [slug, nombre, intId(b.categoriaId), texto(b.origen, 120) || null, lista(b.descripcion), lista(b.especificaciones), precio, antes, texto(b.nombreVariante, 40) || 'Presentación', intId(b.contenedorId), Math.trunc(num(b.orden)), !!b.activo];
 
+    const nuevo = !id;
     const tx = await db.connect();
     try {
       await tx.query('BEGIN');
       const repetido = (await tx.query('SELECT id FROM tienda_productos WHERE slug=$1', [slug])).rows[0];
-      if (repetido && Number(repetido.id) !== id) { await tx.query('ROLLBACK'); return res.status(409).json({ error: 'Ya hay un producto con esa dirección (slug). Cambia el nombre o el slug.' }); }
+      if (repetido && Number(repetido.id) !== id) { await tx.query('ROLLBACK'); return fallo(409, 'Ya hay un producto con esa dirección (slug). Cambia el nombre o el slug.'); }
       if (id) {
         const r = await tx.query('UPDATE tienda_productos SET slug=$1,nombre=$2,categoria_id=$3,origen=$4,descripcion=$5,especificaciones=$6,precio_usd=$7,precio_antes_usd=$8,nombre_variante=$9,contenedor_id=$10,orden=$11,activo=$12,actualizado_en=CURRENT_TIMESTAMP WHERE id=$13', [...valores, id]);
-        if (!r.rowCount) { await tx.query('ROLLBACK'); return res.status(404).json({ error: 'Producto no encontrado' }); }
+        if (!r.rowCount) { await tx.query('ROLLBACK'); return fallo(404, 'Producto no encontrado'); }
       } else {
         id = Number((await tx.query('INSERT INTO tienda_productos(slug,nombre,categoria_id,origen,descripcion,especificaciones,precio_usd,precio_antes_usd,nombre_variante,contenedor_id,orden,activo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id', valores)).rows[0].id);
       }
@@ -477,20 +481,32 @@ function registrar(app, { db, auth, intId, logAction }) {
       }
       // No se borran: pueden estar en pedidos ya hechos.
       for (const vid of existentes) if (!vistas.has(vid)) await tx.query('UPDATE tienda_variantes SET activa = FALSE WHERE id=$1', [vid]);
-      // Solo los manda el importador; editar el producto en el panel no los borra.
+      await tx.query('COMMIT');
+      // Origen y costo de referencia (solo los manda el importador; editar en el panel no los borra). Van aparte y
+      // después del COMMIT: si falta la migración 20261104000000_tienda_importador.sql, el producto se guarda igual.
+      let aviso = null;
       if (b.fuenteUrl !== undefined || b.costoReferencia !== undefined) {
         const fuente = /^https?:\/\//.test(texto(b.fuenteUrl, 600)) ? texto(b.fuenteUrl, 600) : null;
-        await tx.query('UPDATE tienda_productos SET fuente_url=$1, costo_referencia=$2 WHERE id=$3', [fuente, b.costoReferencia ? JSON.stringify(b.costoReferencia).slice(0, 4000) : null, id]);
+        try {
+          await db.query('UPDATE tienda_productos SET fuente_url=$1, costo_referencia=$2 WHERE id=$3', [fuente, b.costoReferencia ? JSON.stringify(b.costoReferencia).slice(0, 4000) : null, id]);
+        } catch (e) {
+          console.error('Origen del producto no guardado (¿falta la migración 20261104000000_tienda_importador.sql?):', e.message);
+          aviso = 'El producto se guardó, pero no su enlace de origen ni su costo: falta aplicar la migración 20261104000000_tienda_importador.sql en Supabase.';
+        }
       }
-      await tx.query('COMMIT');
-      await logAction(req.user.id, `Producto de la tienda: ${nombre}`, 'tienda_productos', id, b.activo ? 'Publicado.' : 'Guardado sin publicar.');
-      res.status(req.method === 'POST' ? 201 : 200).json({ ok: true, id: String(id), slug });
+      await logAction(usuarioId, `Producto de la tienda: ${nombre}`, 'tienda_productos', id, b.activo ? 'Publicado.' : 'Guardado sin publicar.');
+      return { status: nuevo ? 201 : 200, body: { ok: true, id: String(id), slug, ...(aviso ? { aviso } : {}) } };
     } catch (e) {
       await tx.query('ROLLBACK').catch(() => {});
       throw e;
     } finally {
       tx.release?.();
     }
+  }
+
+  async function guardarProducto(req, res, id) {
+    const r = await persistirProducto(req.body || {}, id, req.user.id);
+    res.status(r.status).json(r.body);
   }
 
   app.post('/api/tienda/admin/productos', auth, async (req, res) => {
@@ -683,6 +699,9 @@ function registrar(app, { db, auth, intId, logAction }) {
       tx?.release?.();
     }
   });
+
+  // La carga masiva (tienda-lote.js) guarda cada fila con la misma validación que el formulario del panel.
+  return { persistirProducto, slugDe };
 }
 
 module.exports = { ensureSchema, registrar, ESTADOS, METODOS_PAGO };
