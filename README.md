@@ -21,6 +21,10 @@ CALCULADORA CBM v54: incluye tarifa base de $660/CBM, extras por tipo de mercanc
 V546: detalles de contenedor con CBM Totales para administradores y etiquetas asociadas en bloques clicables que abren los detalles de cada etiqueta.
 
 
+## Web pública y tienda en preventa
+
+Arquitectura completa en [docs/ARQUITECTURA-WEB.md](docs/ARQUITECTURA-WEB.md). La web de Criollo Cargo (zarpes, rastreo, cotizador, solicitudes y tienda) usa este mismo servidor y la misma base que el panel: `web-publica.js` (`/api/web/*`), `tienda.js` (`/api/tienda/*`) y `tarifas.js` (tarifas de referencia compartidas). Migración: `supabase/migrations/20261103000000_web_tienda.sql`.
+
 ## API de la app móvil de clientes (Caribe Cargo)
 
 Código en `app-movil.js`. Los clientes entran con su **código de cliente** (`LC-CLI-000001`) y una **clave** que define el personal; su token (`typ: cliente`) solo sirve en `/api/app/*`, y el token del personal no sirve ahí.

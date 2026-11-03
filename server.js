@@ -26,6 +26,8 @@ const appMovil = require('./app-movil');
 const facturacion = require('./facturacion');
 const importador = require('./importador');
 const documentos = require('./documentos');
+const webPublica = require('./web-publica');
+const tienda = require('./tienda');
 
 const execFileAsync = promisify(execFile);
 const UPLOAD_ROOT = path.join(__dirname, 'uploads', 'quejas');
@@ -416,6 +418,10 @@ async function ensureSchema() {
 
   // 8. Documentos adjuntos de clientes y etiquetas
   await documentos.ensureSchema(db);
+
+  // 9. Web pública (zarpes, rastreo, cotizador, solicitudes) y tienda en preventa
+  await webPublica.ensureSchema(db);
+  await tienda.ensureSchema(db);
 }
 
 async function seed() {
@@ -1233,6 +1239,13 @@ importador.registrar(app, { db, auth, intId, logAction });
 require('./usuarios').registrar(app, { db, auth, intId, logAction, userOut, getBootstrap });
 require('./packing-ia').registrar(app, { auth, logAction });
 documentos.registrar(app, { db, auth, intId, logAction });
+
+/* ==========================================================================
+   WEB PÚBLICA DE CRIOLLO CARGO (/api/web/*) Y TIENDA EN PREVENTA (/api/tienda/*)
+   ========================================================================== */
+
+webPublica.registrar(app, { db, auth, intId, logAction });
+tienda.registrar(app, { db, auth, intId, logAction });
 
 /* ==========================================================================
    CATCH-ALL / SERVIR APLICACIÓN FRONTEND
