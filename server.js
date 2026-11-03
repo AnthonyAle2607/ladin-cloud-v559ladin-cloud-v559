@@ -1251,6 +1251,7 @@ documentos.registrar(app, { db, auth, intId, logAction });
 
 webPublica.registrar(app, { db, auth, intId, logAction });
 tienda.registrar(app, { db, auth, intId, logAction });
+require('./importador-1688').registrar(app, { auth, logAction }); // borradores de productos desde 1688 y otros mercados chinos
 
 /* ==========================================================================
    CATCH-ALL / SERVIR APLICACIÓN FRONTEND

@@ -128,6 +128,25 @@ Estados del pedido: `pendiente_pago → pago_reportado → pagado → en_camino 
 4. **Después:** avisos por WhatsApp o correo al cambiar el pedido, enlazar pedido pagado con cliente y etiqueta,
    pasarela de pago si se decide, opiniones reales.
 
+## Importador de productos de mercados chinos
+
+`importador-1688.js` (panel → Productos → «Importar desde 1688»). Arma un **borrador sin publicar**: nombre, variantes,
+descripción y especificaciones traducidos, enlace de origen, costo de referencia y un **precio sugerido**. El equipo
+revisa, pone cupo y contenedor, y publica.
+
+- **Vías:** capturas de la ficha y/o texto copiado (funciona ya con la IA del lector de packing list); enlace + API de
+  un intermediario (OTAPI u otro) con `IMPORT_1688_URL` (plantilla con `{id}`, `{url}`, `{clave}`) e
+  `IMPORT_1688_CLAVE`: la respuesta del proveedor, sea cual sea su formato, la interpreta la misma IA.
+- **Precio sugerido:** tramo de precio que corresponde a la cantidad que se piensa comprar; costo en USD (los precios
+  pueden venir en CNY o en USD: 1688 internacional ya muestra dólares) + envío dentro de China
+  (`TIENDA_ENVIO_CHINA_PCT`, 8 %) + flete por m³ (caja de exportación ÷ unidades por caja; si solo hay medidas por
+  unidad, +20 % de empaque y aviso de que es aproximado) + margen (`TIENDA_MARGEN_PCT`, 35 %). Tasa: `TIENDA_TASA_CNY`.
+- **Fotos del proveedor:** `POST /api/tienda/admin/productos/:id/imagenes-remotas` solo baja de dominios de mercados
+  chinos (alicdn, 1688, taobao, tmall, yiwugo…), por HTTPS, sin redirecciones, con tope de 6 MB y validando los bytes.
+- **Velocidad:** usa primero los modelos «lite» (`IMPORT_IA_MODELO` para fijar otro orden): una ficha se lee en
+  4–10 s; con el modelo que razona tardaba ~30 s, al límite de Vercel.
+- Probado con una ficha real de 1688 (texto y captura). La tienda pública no expone el origen ni el costo.
+
 ## Pendiente de decidir
 
 - Datos de pago reales (cuentas, teléfono de Pago Móvil, correo de Zelle) para `TIENDA_INSTRUCCIONES_PAGO`.

@@ -128,7 +128,8 @@ async function preguntarIA(cfg, contenidoUsuario) {
 }
 
 async function preguntarModelo(cfg, contenidoUsuario) {
-  const cuerpo = { model: cfg.modelo, temperature: 0, messages: [{ role: 'system', content: INSTRUCCIONES }, { role: 'user', content: contenidoUsuario }], response_format: { type: 'json_object' } };
+  // cfg.instrucciones permite reutilizar el mismo cliente para otras lecturas (p. ej. productos de 1688).
+  const cuerpo = { model: cfg.modelo, temperature: 0, messages: [{ role: 'system', content: cfg.instrucciones || INSTRUCCIONES }, { role: 'user', content: contenidoUsuario }], response_format: { type: 'json_object' } };
   const pedir = async (body) => {
     const r = await fetch(`${cfg.url}/chat/completions`, {
       method: 'POST',
@@ -285,4 +286,4 @@ function registrar(app, { auth, logAction }) {
   });
 }
 
-module.exports = { registrar, normalizar, revisar, numero };
+module.exports = { registrar, normalizar, revisar, numero, configuracion, preguntarIA, tipoDeImagen };

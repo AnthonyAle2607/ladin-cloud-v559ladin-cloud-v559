@@ -104,6 +104,9 @@ async function ensureSchema(db) {
     orden INTEGER NOT NULL DEFAULT 0,
     activa BOOLEAN NOT NULL DEFAULT TRUE)`);
   await db.query('CREATE INDEX IF NOT EXISTS tienda_variantes_producto_idx ON tienda_variantes(producto_id)');
+  // De dónde salió el producto (importador-1688.js) y su costo de referencia en yuanes: solo los ve el panel.
+  await db.query('ALTER TABLE tienda_productos ADD COLUMN IF NOT EXISTS fuente_url TEXT');
+  await db.query('ALTER TABLE tienda_productos ADD COLUMN IF NOT EXISTS costo_referencia TEXT');
   await db.query('CREATE TABLE IF NOT EXISTS tienda_imagenes (id SERIAL PRIMARY KEY, producto_id INTEGER NOT NULL, nombre_guardado VARCHAR(255) NOT NULL, mime_type VARCHAR(60) NOT NULL, almacen VARCHAR(10) NOT NULL DEFAULT \'disco\', orden INTEGER NOT NULL DEFAULT 0)');
   await db.query('CREATE INDEX IF NOT EXISTS tienda_imagenes_producto_idx ON tienda_imagenes(producto_id)');
   await db.query('CREATE TABLE IF NOT EXISTS tienda_destinos (id SERIAL PRIMARY KEY, nombre VARCHAR(80) NOT NULL, costo_usd NUMERIC(10,2) NOT NULL DEFAULT 0, dias_extra INTEGER NOT NULL DEFAULT 0, requiere_direccion BOOLEAN NOT NULL DEFAULT TRUE, orden INTEGER NOT NULL DEFAULT 0, activo BOOLEAN NOT NULL DEFAULT TRUE)');
@@ -420,6 +423,7 @@ function registrar(app, { db, auth, intId, logAction }) {
         descripcion: listaJSON(p.descripcion), especificaciones: listaJSON(p.especificaciones),
         precioUsd: num(p.precio_usd), precioAntesUsd: p.precio_antes_usd != null ? num(p.precio_antes_usd) : null, nombreVariante: p.nombre_variante,
         contenedorId: p.contenedor_id ? String(p.contenedor_id) : '', contenedor: p.contenedor || '', orden: num(p.orden), activo: !!p.activo,
+        fuenteUrl: p.fuente_url || '', costoReferencia: (() => { try { return p.costo_referencia ? JSON.parse(p.costo_referencia) : null; } catch { return null; } })(),
         variantes: variantes.filter((v) => v.producto_id === p.id).map((v) => ({ id: String(v.id), nombre: v.nombre, sku: v.sku || '', cupo: num(v.cupo), precioUsd: v.precio_usd != null ? num(v.precio_usd) : null, activa: !!v.activa })),
         imagenes: imagenes.filter((i) => i.producto_id === p.id).map((i) => ({ id: String(i.id), url: `/api/tienda/admin/imagenes/${i.id}` })),
       })));
@@ -473,6 +477,11 @@ function registrar(app, { db, auth, intId, logAction }) {
       }
       // No se borran: pueden estar en pedidos ya hechos.
       for (const vid of existentes) if (!vistas.has(vid)) await tx.query('UPDATE tienda_variantes SET activa = FALSE WHERE id=$1', [vid]);
+      // Solo los manda el importador; editar el producto en el panel no los borra.
+      if (b.fuenteUrl !== undefined || b.costoReferencia !== undefined) {
+        const fuente = /^https?:\/\//.test(texto(b.fuenteUrl, 600)) ? texto(b.fuenteUrl, 600) : null;
+        await tx.query('UPDATE tienda_productos SET fuente_url=$1, costo_referencia=$2 WHERE id=$3', [fuente, b.costoReferencia ? JSON.stringify(b.costoReferencia).slice(0, 4000) : null, id]);
+      }
       await tx.query('COMMIT');
       await logAction(req.user.id, `Producto de la tienda: ${nombre}`, 'tienda_productos', id, b.activo ? 'Publicado.' : 'Guardado sin publicar.');
       res.status(req.method === 'POST' ? 201 : 200).json({ ok: true, id: String(id), slug });
@@ -489,6 +498,41 @@ function registrar(app, { db, auth, intId, logAction }) {
   });
   app.put('/api/tienda/admin/productos/:id', auth, async (req, res) => {
     try { if (soloAdmin(req, res)) await guardarProducto(req, res, intId(req.params.id)); } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo guardar el producto' }); }
+  });
+
+  /**
+   * Trae las fotos del proveedor desde sus enlaces (los que encontró el importador). Solo de dominios de mercados
+   * chinos, por HTTPS, con tope de tamaño y validando los bytes: el servidor no descarga cualquier dirección.
+   */
+  const DOMINIOS_FOTOS = ['alicdn.com', '1688.com', 'taobao.com', 'tmall.com', 'yiwugo.com', 'tbcdn.cn', 'alibaba.com'];
+  app.post('/api/tienda/admin/productos/:id/imagenes-remotas', auth, async (req, res) => {
+    try {
+      if (!soloAdmin(req, res)) return;
+      const id = intId(req.params.id);
+      if (!(await db.query('SELECT id FROM tienda_productos WHERE id=$1', [id])).rows.length) return res.status(404).json({ error: 'Producto no encontrado' });
+      const urls = (Array.isArray(req.body?.urls) ? req.body.urls : []).map((u) => texto(u, 600)).slice(0, 8);
+      let orden = num((await db.query('SELECT COUNT(*) AS n FROM tienda_imagenes WHERE producto_id=$1', [id])).rows[0]?.n);
+      let guardadas = 0;
+      for (const u of urls) {
+        let destino;
+        try { destino = new URL(u); } catch { continue; }
+        if (destino.protocol !== 'https:' || !DOMINIOS_FOTOS.some((d) => destino.hostname === d || destino.hostname.endsWith('.' + d))) continue;
+        try {
+          const r = await fetch(destino, { redirect: 'error', signal: AbortSignal.timeout(10000) });
+          if (!r.ok || Number(r.headers.get('content-length') || 0) > 6 * 1024 * 1024) continue;
+          const buf = Buffer.from(await r.arrayBuffer());
+          const t = buf.length <= 6 * 1024 * 1024 ? tipoImagen(buf) : null;
+          if (!t) continue;
+          const g = await fotos.guardar(`p${id}/${Date.now()}_${crypto.randomBytes(4).toString('hex')}${t.ext}`, buf, t.mime);
+          await db.query('INSERT INTO tienda_imagenes(producto_id,nombre_guardado,mime_type,almacen,orden) VALUES($1,$2,$3,$4,$5)', [id, g.clave, t.mime, g.almacen, orden++]);
+          guardadas++;
+        } catch { /* una foto que no baja no detiene las demás */ }
+      }
+      res.json({ ok: true, guardadas, pedidas: urls.length });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'No se pudieron traer las fotos' });
+    }
   });
 
   app.post('/api/tienda/admin/productos/:id/imagenes', auth, (req, res, next) => subir.array('imagenes', 8)(req, res, (err) => (err ? res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'Cada foto debe pesar menos de 6 MB' : 'No se pudieron recibir las fotos' }) : next())), async (req, res) => {

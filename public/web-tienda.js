@@ -99,7 +99,7 @@
     const sinCupo = publicados.filter((p) => !p.variantes.some((v) => v.activa && v.cupo > 0));
     page().innerHTML = `
       <div class="page-head"><div><h1>Productos de la tienda</h1><p>Preventa de la web: cada producto viaja en un contenedor y tiene un cupo por variante.</p></div>
-        <div class="row"><button class="btn btn-secondary" id="wtCategorias">Categorías</button><button class="btn btn-secondary" id="wtDestinos">Destinos</button><button class="btn btn-primary" id="wtNuevo">Nuevo producto</button></div></div>
+        <div class="row"><button class="btn btn-secondary" id="wtCategorias">Categorías</button><button class="btn btn-secondary" id="wtDestinos">Destinos</button><button class="btn btn-secondary" id="wtImportar">Importar desde 1688</button><button class="btn btn-primary" id="wtNuevo">Nuevo producto</button></div></div>
       <div class="fx-kpis">
         <div class="fx-kpi"><span>Publicados</span><b>${publicados.length}</b><small>de ${productos.length} producto(s)</small></div>
         <div class="fx-kpi"><span>Agotados</span><b>${sinCupo.length}</b><small>publicados sin cupo</small></div>
@@ -114,6 +114,7 @@
     $('wtBuscar').oninput = (e) => { filtroProd = e.target.value; pintarProductos(); };
     $('wtCat').onchange = (e) => { filtroCat = e.target.value; pintarProductos(); };
     $('wtNuevo').onclick = () => productoModal();
+    $('wtImportar').onclick = importarModal;
     $('wtCategorias').onclick = categoriasModal;
     $('wtDestinos').onclick = destinosModal;
   }
@@ -227,6 +228,100 @@
       if (!confirm('¿Borrar esta foto?')) return;
       try { await api(`/api/tienda/admin/imagenes/${encodeURIComponent(b.dataset.borrarFoto)}`, { method: 'DELETE' }); await recargar(); } catch (e) { toast(e.message); }
     }));
+  }
+
+  /* ---------- Importar desde 1688 (importador-1688.js) ---------- */
+
+  async function importarModal() {
+    let estado;
+    try { estado = await api('/api/tienda/admin/importar/estado'); } catch (e) { return toast(e.message); }
+    openModal('Importar producto desde 1688', `
+      <p class="fx-muted" style="margin:0 0 10px">Arma un <b>borrador sin publicar</b> con el nombre y la descripción traducidos y un precio sugerido. Tú lo revisas, pones el cupo y el contenedor, y lo publicas.</p>
+      ${estado.ia ? '' : '<p class="fx-bad">La IA no está configurada en el servidor (IA_PROVEEDOR e IA_API_KEY): el importador no puede leer productos.</p>'}
+      <div class="fx-grid">${field('wtImpUrl', 'Enlace del producto (1688, Taobao, Yiwugo…)', '', 'url', 'placeholder="https://detail.1688.com/offer/…html"')}${field('wtImpCantidad', 'Cantidad que piensas comprar', '100', 'number', 'min="1" step="1" title="Elige el precio por cantidad que aplica"')}</div>
+      <p class="fx-muted" style="margin:6px 0 10px">${estado.api ? 'Con el enlace basta: el servidor consulta la API del proveedor de datos.' : 'Aún no hay API de un proveedor de datos: el enlace se guarda como referencia. Sube <b>capturas</b> de la página (precio por cantidad, variantes y la tabla de la caja, 装箱) o <b>pega el texto</b> de la página.'}</p>
+      <div class="fx-grid">
+        <div class="field"><label for="wtImpCapturas">Capturas de la página (hasta 4)</label><input type="file" id="wtImpCapturas" accept="image/jpeg,image/png,image/webp" multiple></div>
+        <div class="field"><label for="wtImpTexto">Texto copiado de la página (opcional)</label><textarea id="wtImpTexto" rows="4" maxlength="40000" placeholder="Ctrl+A y Ctrl+C en la página del producto, y pega aquí"></textarea></div>
+      </div>
+      <div id="wtImpResultado"></div>`,
+      `<button class="btn btn-secondary" id="modalCancel">Cancelar</button><button class="btn btn-primary" id="wtImpLeer" ${estado.ia ? '' : 'disabled'}>Leer producto</button>`);
+    $('modalCancel').onclick = closeModal;
+    $('wtImpLeer').onclick = async () => {
+      const datos = new FormData();
+      const url = $('wtImpUrl').value.trim();
+      const texto = $('wtImpTexto').value.trim();
+      const capturas = [...($('wtImpCapturas').files || [])].slice(0, 4);
+      if (!url && !texto && !capturas.length) return toast('Sube capturas, pega el texto o indica el enlace');
+      if (url) datos.append('url', url);
+      if (texto) datos.append('texto', texto);
+      datos.append('cantidad', $('wtImpCantidad').value || '100');
+      capturas.forEach((c) => datos.append('capturas', c));
+      const boton = $('wtImpLeer');
+      boton.disabled = true; boton.textContent = 'Leyendo… (hasta 30 s)';
+      $('wtImpResultado').innerHTML = '';
+      try {
+        const r = await fetch('/api/tienda/admin/importar', { method: 'POST', headers: { Authorization: `Bearer ${session.token}` }, body: datos });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+        mostrarImportado(j, url);
+      } catch (e) { $('wtImpResultado').innerHTML = `<p class="fx-bad">${esc(e.message)}</p>`; }
+      finally { boton.disabled = false; boton.textContent = 'Leer de nuevo'; }
+    };
+  }
+
+  function mostrarImportado({ datos: d, sugerido, avisos }, urlPegada) {
+    const cny = (n) => (n != null ? `${d.moneda === 'USD' ? 'US$' : '¥'}${Number(n).toLocaleString('es-VE', { maximumFractionDigits: 2 })}` : '—');
+    const mu = d.medidasUnidad || {};
+    const p = d.paquete || {};
+    const categoria = categorias.find((c) => c.activa && c.nombre.toLowerCase() === String(d.categoriaSugerida || '').toLowerCase());
+    const contenedores = db.containers.filter((c) => !['done', 'closed'].includes(c.status));
+    const g = sugerido?.desglose;
+    $('wtImpResultado').innerHTML = `<div class="fx-box" style="margin-top:12px"><h3>Borrador</h3>
+      ${(avisos || []).map((a) => `<p class="fx-warn" style="margin:0 0 6px">⚠ ${esc(a)}</p>`).join('')}
+      <div class="fx-grid">
+        ${field('wtImpNombre', 'Nombre en la tienda', d.nombre || '', 'text', 'maxlength="150"')}
+        ${selectField('wtImpCategoria', 'Categoría', [['', d.categoriaSugerida ? `Sin categoría (sugerida: ${d.categoriaSugerida})` : 'Sin categoría'], ...categorias.filter((c) => c.activa).map((c) => [c.id, c.nombre])], categoria?.id || '')}
+        ${selectField('wtImpContenedor', 'Viaja en el contenedor', [['', 'Sin asignar'], ...contenedores.map((c) => [c.id, `${c.number}${c.eta ? ` · llega ${c.eta}` : ''}`])], '')}
+        ${field('wtImpPrecio', 'Precio de venta (USD)', sugerido ? String(sugerido.precioUsd) : '', 'number', 'min="0.01" step="0.01"')}
+      </div>
+      <p class="fx-muted" style="margin:8px 0">${esc(d.nombreOriginal || '')}${d.proveedor ? ` · <b>${esc(d.proveedor)}</b>` : ''}${d.origen ? ` · ${esc(d.origen)}` : ''}</p>
+      <div class="fx-grid">
+        <div><b>Precios en origen</b><br>${d.precios.map((t) => `desde ${t.desdeUnidades} ${esc(d.unidad || 'u.')}: ${cny(t.precio)}`).join('<br>') || '—'}</div>
+        <div><b>Empaque</b><br>Caja: ${p.largoCm ? `${p.largoCm}×${p.anchoCm}×${p.altoCm} cm` : 'sin medidas'}${p.unidadesPorCaja ? ` · ${p.unidadesPorCaja} u.` : ''}${p.pesoKg ? ` · ${p.pesoKg} kg` : ''}${mu.largoCm ? `<br>Unidad: ${mu.largoCm}×${mu.anchoCm}×${mu.altoCm} cm${mu.pesoKg ? ` · ${mu.pesoKg} kg` : ''}` : ''}</div>
+        <div><b>Precio sugerido</b> (comprando ${sugerido?.cantidad ?? '—'}, tramo desde ${sugerido?.tramoDesde ?? '—'})<br>${g ? `${cny(g.precioOrigen)}${g.tasa ? ` ÷ ${g.tasa}` : ''} = $${g.costoUsd} · envío China $${g.envioChinaUsd} · flete ${g.fleteUsd != null ? `$${g.fleteUsd} (${g.fleteSegun === 'caja' ? 'por caja' : 'aprox. por unidad'})` : 'sin datos'} · margen ${g.margenPct}% → <b>$${sugerido.precioUsd}</b>` : '—'}</div>
+      </div>
+      ${d.variantes.length ? `<p style="margin:10px 0 4px"><b>${esc(d.nombreVariante || 'Variantes')}:</b> ${d.variantes.map((v) => esc(v.nombre) + (v.precioSugeridoUsd ? ` ($${v.precioSugeridoUsd})` : '')).join(' · ')}</p>` : ''}
+      ${d.descripcion.length ? `<p class="fx-muted" style="margin:6px 0">${d.descripcion.map(esc).join('<br>')}</p>` : ''}
+      ${d.especificaciones.length ? `<p class="fx-muted" style="margin:6px 0">${d.especificaciones.map(esc).join(' · ')}</p>` : ''}
+      <p class="fx-muted" style="margin:6px 0">${d.imagenes.length} foto(s) del proveedor${d.imagenes.length ? ': se intentarán traer al borrador' : ''}.</p>
+      <div class="row" style="margin-top:10px"><button class="btn btn-primary" id="wtImpCrear" type="button">Crear borrador</button></div></div>`;
+    $('wtImpCrear').onclick = async () => {
+      const boton = $('wtImpCrear');
+      const nombre = $('wtImpNombre').value.trim();
+      const precio = Number($('wtImpPrecio').value);
+      if (!nombre) return toast('Escribe el nombre');
+      if (!(precio > 0)) return toast('Indica el precio de venta');
+      boton.disabled = true; boton.textContent = 'Creando…';
+      try {
+        const r = await api('/api/tienda/admin/productos', { method: 'POST', body: JSON.stringify({
+          nombre, categoriaId: $('wtImpCategoria').value, contenedorId: $('wtImpContenedor').value, origen: d.origen || '',
+          precioUsd: precio, nombreVariante: d.nombreVariante || 'Presentación', descripcion: d.descripcion, especificaciones: d.especificaciones, activo: false,
+          // El cupo lo decide el equipo: el borrador nace en 0 y sin publicar.
+          variantes: d.variantes.length ? d.variantes.map((v) => ({ nombre: v.nombre, cupo: 0, precioUsd: v.precioSugeridoUsd || null })) : [{ nombre: 'Única', cupo: 0 }],
+          fuenteUrl: d.url || urlPegada || '',
+          costoReferencia: { proveedor: d.proveedor, moneda: d.moneda, precios: d.precios, paquete: d.paquete, medidasUnidad: d.medidasUnidad, desglose: sugerido?.desglose || null, pedidoMinimo: d.pedidoMinimo, nombreOriginal: d.nombreOriginal },
+        }) });
+        let fotosTexto = '';
+        if (d.imagenes.length) {
+          try { const f = await api(`/api/tienda/admin/productos/${encodeURIComponent(r.id)}/imagenes-remotas`, { method: 'POST', body: JSON.stringify({ urls: d.imagenes }) }); fotosTexto = ` y ${f.guardadas} de ${f.pedidas} foto(s)`; } catch (_) { fotosTexto = ' (las fotos no se pudieron traer)'; }
+        }
+        toast(`Borrador creado${fotosTexto}. Revisa, pon el cupo y publícalo.`);
+        await mostrarProductos();
+        const nuevo = productos.find((x) => x.id === r.id);
+        if (nuevo) productoModal(nuevo); else closeModal();
+      } catch (e) { toast(e.message); boton.disabled = false; boton.textContent = 'Crear borrador'; }
+    };
   }
 
   function categoriasModal() {
