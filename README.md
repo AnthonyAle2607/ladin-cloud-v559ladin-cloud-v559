@@ -21,15 +21,24 @@ CALCULADORA CBM v54: incluye tarifa base de $660/CBM, extras por tipo de mercanc
 V546: detalles de contenedor con CBM Totales para administradores y etiquetas asociadas en bloques clicables que abren los detalles de cada etiqueta.
 
 
+## Web pública y tienda en preventa
+
+Arquitectura completa en [docs/ARQUITECTURA-WEB.md](docs/ARQUITECTURA-WEB.md). La web de Criollo Cargo (zarpes, rastreo, cotizador, solicitudes y tienda) usa este mismo servidor y la misma base que el panel: `web-publica.js` (`/api/web/*`), `tienda.js` (`/api/tienda/*`) y `tarifas.js` (tarifas de referencia compartidas). Migración: `supabase/migrations/20261103000000_web_tienda.sql`.
+
 ## API de la app móvil de clientes (Caribe Cargo)
 
 Código en `app-movil.js`. Los clientes entran con su **código de cliente** (`LC-CLI-000001`) y una **clave** que define el personal; su token (`typ: cliente`) solo sirve en `/api/app/*`, y el token del personal no sirve ahí.
 
 **Rutas de la app** (con `Authorization: Bearer <token>`; cada consulta se limita al cliente de la sesión):
-`POST /api/app/login` · `GET /api/app/etiquetas` · `GET /api/app/etiquetas/:id` · `GET /api/app/fotos/:id` · `GET /api/app/avisos` · `GET|PUT /api/app/preferencias` · `POST /api/app/dispositivos`
+`POST /api/app/login` · `GET /api/app/version` · `GET /api/app/perfil` · `GET /api/app/etiquetas` · `GET /api/app/etiquetas/:id` · `GET /api/app/fotos/:id` · `GET /api/app/avisos` · `GET|PUT /api/app/preferencias` · `POST /api/app/dispositivos`
 
 **Rutas del personal** que la alimentan (admin o la asesora del cliente):
 - `PUT /api/clientes/:id/clave` — `{ clave }` (mínimo 8 caracteres) crea o cambia el acceso del cliente a la app.
+- `DELETE /api/clientes/:id/clave` — quita el acceso: la sesión del teléfono deja de valer y se borran sus tokens push.
+
+En el panel se hace desde la ficha del cliente, «Acceso a la app móvil» (genera la clave y la muestra una sola vez, con copiar y enviar por WhatsApp). `bootstrap` indica `appAccess` por cliente.
+
+**Datos en vivo:** la app consulta `GET /api/app/version` (huella de las etiquetas, contenedores, lotes, fotos, avisos y datos del cliente) cada 15 s y recarga si cambió; el panel vuelve a pedir `/api/bootstrap` cada 20 s (`public/envivo.js`) y repinta solo si hay cambios y no hay una ventana abierta ni se está escribiendo. Es consulta periódica a propósito: en Vercel no se mantienen conexiones abiertas.
 - `PUT /api/etiquetas/:id/lotes` — `{ lotes: [{ nombre, cajas, kgPorCaja, largoCm, anchoCm, altoCm }] }` reemplaza los lotes (el peso total se calcula).
 - `POST /api/etiquetas/:id/fotos` — multipart con `fotos` (JPG/PNG, máx. 10 de 8 MB), `titulo`, `lugar`. Se validan por sus bytes y se guardan en `uploads/etiquetas/` (no público).
 - `DELETE /api/etiquetas/:id/fotos/:fotoId`
@@ -66,3 +75,29 @@ Permisos: solo el administrador emite facturas, anula, registra pagos, cambia re
 - No se muestran al cliente las observaciones internas ni el estado de atención (son notas del equipo). `GET /api/app/perfil` devuelve solo una lista fija de campos.
 - La columna `clientes.cedula` se crea sola al arrancar el servidor (y está en `supabase/migrations/20261029000300_cliente_cedula.sql`).
 - `APP_WHATSAPP` (opcional) activa el botón «Corregir un dato con mi asesora» por WhatsApp.
+
+
+## Lector de packing list con IA
+
+En la ficha de una etiqueta principal, el recuadro **«Leer packing list con IA»** recibe la foto (JPG, PNG o WEBP) o el Excel/CSV del packing list del proveedor y autocompleta cajas, CBM, tipo de mercancía, observaciones y, si lo encuentra por RIF o nombre, el cliente. En una etiqueta ya guardada también carga los lotes de la app del cliente (sin guardarlos). Nada se guarda hasta que el usuario confirma.
+
+Código: `packing-ia.js` (`POST /api/packing-list/leer`, `GET /api/packing-list/estado`). Compara la suma de las líneas con los totales impresos y el CBM con las medidas de las cajas, y avisa cuando no cuadran.
+
+Usa cualquier proveedor compatible con la API de OpenAI. En el `.env`:
+
+| Proveedor | `IA_PROVEEDOR` | `IA_API_KEY` | Modelo por defecto |
+|---|---|---|---|
+| Google Gemini | `gemini` | clave de AI Studio | `gemini-3.6-flash`, si está saturado `gemini-3.5-flash` y luego `gemini-3.5-flash-lite` |
+| OpenAI | `openai` | clave de OpenAI | `gpt-4o-mini` |
+| Ollama (local, gratis) | `ollama` | — | `qwen2.5vl` (`ollama pull qwen2.5vl`) |
+| DeepSeek | `deepseek` | clave de DeepSeek | `deepseek-chat` (no lee fotos: solo Excel/CSV) |
+
+`IA_MODELO` cambia el modelo e `IA_BASE_URL` apunta a otro servidor compatible. Los PDF no se leen directo: sube una captura.
+
+
+## Documentos adjuntos, asesor fijo y estadísticas por mes
+
+- **Documentos** (`documentos.js`, `public/documentos.js`): en la ficha del cliente (cédula, RIF, registro mercantil, otro) y de la etiqueta (packing list, factura comercial, fotos de la mercancía, fotos de las cajas, otro). PDF, JPG, PNG, WEBP, Excel o Word de hasta 10 MB; el tipo se valida por los bytes. Los ven y suben el administrador y la asesora del cliente. Se guardan en el bucket privado `documentos` de Supabase Storage (o en `uploads/documentos/` sin Storage) y se borran con su cliente o etiqueta. En Supabase hay que aplicar `supabase/migrations/20261102000000_documentos.sql`.
+- **Asesor del cliente**: al crear un cliente queda asignado a quien lo registra (nombre y código de asesora, sin lista desplegable). Para moverlo de cartera se usa «Reasignar cartera», que ahora también reparte los clientes registrados por el administrador.
+- **Período** (`public/periodo.js`): Estadísticas, Reportes, Facturación y Comisiones tienen un selector «Global / mes». Con un mes elegido se cuenta solo lo registrado ese mes (clientes y etiquetas por fecha de registro, facturas y comisiones por fecha de la factura). `GET /api/comisiones?mes=YYYY-MM`.
+- **Exportar etiquetas**: el CSV respeta la búsqueda y el filtro de estado de la pantalla e incluye cliente, asesora, mercancía, cajas, CBM, contenedor y fechas.

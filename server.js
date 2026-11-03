@@ -25,6 +25,9 @@ const db = require('./db');
 const appMovil = require('./app-movil');
 const facturacion = require('./facturacion');
 const importador = require('./importador');
+const documentos = require('./documentos');
+const webPublica = require('./web-publica');
+const tienda = require('./tienda');
 
 const execFileAsync = promisify(execFile);
 const UPLOAD_ROOT = path.join(__dirname, 'uploads', 'quejas');
@@ -46,6 +49,12 @@ function resolveJwtSecret() {
   if (configured && configured.length >= MIN_SECRET_LENGTH) return configured;
   if (IS_PRODUCTION) {
     console.error(`❌ JWT_SECRET es obligatorio en producción (mínimo ${MIN_SECRET_LENGTH} caracteres).`);
+    // Diagnóstico sin revelar el valor: si llegó vacía, si es muy corta o si la variable está en otro entorno de Vercel.
+    console.error(`   JWT_SECRET ${configured === undefined ? 'NO está definida en este despliegue' : `tiene ${configured.length} caracteres`}${process.env.VERCEL_ENV ? ` · entorno de Vercel: ${process.env.VERCEL_ENV}` : ''}${configured !== undefined && configured !== configured.trim() ? ' · lleva espacios al inicio o al final' : ''}.`);
+    if (process.env.VERCEL) {
+      console.error('   En Vercel: Settings → Environment Variables → la variable debe incluir el entorno de este despliegue (Production o Preview) y hay que redesplegar después de cambiarla.');
+      throw new Error('JWT_SECRET es obligatoria en producción (mínimo 32 caracteres)'); // api/index.js lo convierte en un mensaje claro
+    }
     process.exit(1);
   }
   console.warn('⚠️ JWT_SECRET no definido: se usa un secreto temporal (las sesiones se cierran al reiniciar).');
@@ -140,7 +149,8 @@ function clientOut(r) {
     firstContactDate: r.fecha_primer_contacto ? String(r.fecha_primer_contacto).slice(0, 10) : '',
     createdAt: r.fecha_registro?.toISOString?.().slice(0, 10) || String(r.fecha_registro || '').slice(0, 10),
     updatedAt: r.fecha_actualizacion?.toISOString?.().slice(0, 10) || String(r.fecha_actualizacion || r.fecha_registro || '').slice(0, 10),
-    notes: r.observaciones || ''
+    notes: r.observaciones || '',
+    appAccess: !!r.clave_hash // solo si tiene clave para la app móvil; el hash nunca sale del servidor
   };
 }
 
@@ -184,7 +194,9 @@ function containerOut(r) {
     departure: formatDateOnly(r.fecha_salida),
     eta: formatDateOnly(r.fecha_estimada),
     status: r.estado,
-    notes: r.observaciones || ''
+    notes: r.observaciones || '',
+    // Web pública (web-publica.js): si sale en el tablero de zarpes, cierre de carga, capacidad y ruta
+    web: { publish: !!r.publicar_web, closing: formatDateOnly(r.fecha_cierre), capacityCbm: r.capacidad_cbm != null ? Number(r.capacidad_cbm) : 68, route: r.ruta || '' }
   };
 }
 
@@ -405,6 +417,13 @@ async function ensureSchema() {
 
   // 7. Facturación, pagos y comisiones
   await facturacion.ensureSchema(db);
+
+  // 8. Documentos adjuntos de clientes y etiquetas
+  await documentos.ensureSchema(db);
+
+  // 9. Web pública (zarpes, rastreo, cotizador, solicitudes) y tienda en preventa
+  await webPublica.ensureSchema(db);
+  await tienda.ensureSchema(db);
 }
 
 async function seed() {
@@ -507,7 +526,10 @@ async function getBootstrap(user) {
     user.rol === 'admin' ? [] : [user.id]
   );
 
-  const containersQ = await db.query("SELECT id,numero,origen,TO_CHAR(fecha_salida,'YYYY-MM-DD') AS fecha_salida,TO_CHAR(fecha_estimada,'YYYY-MM-DD') AS fecha_estimada,estado,observaciones FROM contenedores ORDER BY id DESC");
+  const COLS_CONTENEDOR = "id,numero,origen,TO_CHAR(fecha_salida,'YYYY-MM-DD') AS fecha_salida,TO_CHAR(fecha_estimada,'YYYY-MM-DD') AS fecha_estimada,estado,observaciones";
+  // Las columnas de la web llegan con la migración 20261103000000_web_tienda.sql; sin ella el panel sigue funcionando.
+  const containersQ = await db.query(`SELECT ${COLS_CONTENEDOR},publicar_web,TO_CHAR(fecha_cierre,'YYYY-MM-DD') AS fecha_cierre,capacidad_cbm,ruta FROM contenedores ORDER BY id DESC`)
+    .catch(() => db.query(`SELECT ${COLS_CONTENEDOR} FROM contenedores ORDER BY id DESC`));
   const historyQ = user.rol === 'admin' ? await db.query('SELECT * FROM historial ORDER BY fecha DESC LIMIT 200') : { rows: [] };
   const remindersQ = user.rol === 'admin' ? await db.query('SELECT * FROM recordatorios ORDER BY fecha_hora ASC') : await db.query('SELECT * FROM recordatorios WHERE asesora_id=$1 ORDER BY fecha_hora ASC', [user.id]);
   const complaintsQ = user.rol === 'admin' ? await db.query('SELECT * FROM quejas ORDER BY creado_en DESC') : await db.query('SELECT * FROM quejas WHERE usuario_id=$1 ORDER BY creado_en DESC', [user.id]);
@@ -565,7 +587,8 @@ function limpiarCedula(v) {
 app.post('/api/clientes', auth, async (req, res) => {
   try {
     const b = req.body || {};
-    const advisorId = req.user.rol === 'admin' ? intId(b.advisorId) : req.user.id;
+    // El cliente queda con quien lo registra; para moverlo de cartera está «Reasignar cartera».
+    const advisorId = req.user.id;
     if (!b.name) return res.status(400).json({ error: 'El nombre es obligatorio' });
     if (!advisorId) return res.status(400).json({ error: 'Debes asignar una asesora' });
     const ced = limpiarCedula(b.idNumber);
@@ -606,7 +629,7 @@ app.put('/api/clientes/:id', auth, async (req, res) => {
     if (req.user.rol !== 'admin' && old.rows[0].asesora_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso' });
 
     const b = req.body || {};
-    const advisorId = req.user.rol === 'admin' ? intId(b.advisorId) : req.user.id;
+    const advisorId = old.rows[0].asesora_id; // la asesora no se cambia aquí: solo con «Reasignar cartera»
     const parts = String(b.name || '').trim().split(/\s+/);
     const nombre = parts.shift() || '';
     const apellido = parts.join(' ') || null;
@@ -645,6 +668,7 @@ app.delete('/api/clientes/:id', auth, async (req, res) => {
     const conFacturas = await db.query('SELECT codigo FROM facturas WHERE cliente_id=$1 LIMIT 1', [id]);
     if (conFacturas.rows.length) return res.status(409).json({ error: `No se puede eliminar: el cliente tiene facturas (${conFacturas.rows[0].codigo}). Se conservan por contabilidad.` });
     const fotos = await appMovil.fotosDeCliente(db, id); // los archivos se borran después; las filas caen en cascada
+    const adjuntos = await documentos.documentosDe(db, { clienteId: id });
     tx = await db.connect();
     await tx.query('BEGIN');
     await tx.query('DELETE FROM etiquetas WHERE etiqueta_padre_id IN (SELECT id FROM etiquetas WHERE cliente_id=$1)', [id]);
@@ -652,6 +676,7 @@ app.delete('/api/clientes/:id', auth, async (req, res) => {
     await tx.query('DELETE FROM clientes WHERE id=$1', [id]);
     await tx.query('COMMIT');
     await appMovil.borrarArchivos(fotos);
+    await documentos.borrarDocumentos(db, adjuntos);
 
     await logAction(req.user.id, `Cliente ${old.rows[0].nombre} eliminado`, 'clientes', id, `Se eliminó el cliente ${old.rows[0].codigo_cliente || ''}.`);
     res.json({ ok: true, deletedId: pref('c', id) });
@@ -676,7 +701,8 @@ app.post('/api/admin/reassign-clients', auth, async (req, res) => {
     if (!targetIds.length) return res.status(400).json({ error: 'Selecciona al menos una asesora destino' });
 
     const source = await db.query('SELECT id,nombre,rol FROM usuarios WHERE id=$1', [sourceId]);
-    if (!source.rows.length || source.rows[0].rol !== 'asesora') return res.status(400).json({ error: 'La asesora de origen no es válida' });
+    // El administrador también puede tener clientes (los que registra él mismo) y repartirlos.
+    if (!source.rows.length || !['asesora', 'admin'].includes(source.rows[0].rol)) return res.status(400).json({ error: 'La asesora de origen no es válida' });
 
     const targets = await db.query("SELECT id,nombre FROM usuarios WHERE id=ANY($1::int[]) AND rol='asesora' AND activo=TRUE", [targetIds]);
     if (targets.rows.length !== targetIds.length) return res.status(400).json({ error: 'Todas las asesoras destino deben estar activas' });
@@ -897,6 +923,7 @@ app.delete('/api/etiquetas/:id', auth, async (req, res) => {
 
     const hijas = await db.query('SELECT id FROM etiquetas WHERE etiqueta_padre_id=$1', [id]);
     const fotos = await appMovil.fotosDeEtiquetas(db, [id, ...hijas.rows.map(h => h.id)]); // archivos a borrar tras el COMMIT
+    const adjuntos = await documentos.documentosDe(db, { etiquetaIds: [id, ...hijas.rows.map(h => h.id)] });
 
     if (client) await client.query('BEGIN');
     const q = (text, params) => client ? client.query(text, params) : db.query(text, params);
@@ -916,6 +943,7 @@ app.delete('/api/etiquetas/:id', auth, async (req, res) => {
     }
     if (client) await client.query('COMMIT');
     await appMovil.borrarArchivos(fotos);
+    await documentos.borrarDocumentos(db, adjuntos);
 
     await logAction(req.user.id, `Etiqueta ${old.rows[0].numero} eliminada`, 'etiquetas', id, `Se eliminó la etiqueta.`);
     res.json({ ok: true, deleted: deletedNumbers.length + 1 });
@@ -1214,6 +1242,16 @@ appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
 facturacion.registrar(app, { db, auth, intId, logAction, JWT_SECRET });
 importador.registrar(app, { db, auth, intId, logAction });
 require('./usuarios').registrar(app, { db, auth, intId, logAction, userOut, getBootstrap });
+require('./packing-ia').registrar(app, { auth, logAction });
+documentos.registrar(app, { db, auth, intId, logAction });
+
+/* ==========================================================================
+   WEB PÚBLICA DE CRIOLLO CARGO (/api/web/*) Y TIENDA EN PREVENTA (/api/tienda/*)
+   ========================================================================== */
+
+webPublica.registrar(app, { db, auth, intId, logAction });
+tienda.registrar(app, { db, auth, intId, logAction });
+require('./importador-1688').registrar(app, { auth, logAction }); // borradores de productos desde 1688 y otros mercados chinos
 
 /* ==========================================================================
    CATCH-ALL / SERVIR APLICACIÓN FRONTEND

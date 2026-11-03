@@ -33,3 +33,5 @@ uploads/quejas/*
 
 uploads/etiquetas/*
 !uploads/etiquetas/.gitkeep
+
+uploads/documentos/*

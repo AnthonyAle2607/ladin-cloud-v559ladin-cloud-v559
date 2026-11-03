@@ -282,6 +282,31 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
     }
   });
 
+  /**
+   * Huella de todo lo que el cliente ve en la app. La app la consulta cada pocos segundos y, si cambió (el panel movió
+   * una etiqueta, subió fotos, cambió datos…), vuelve a cargar: así se actualiza en vivo sin conexiones abiertas
+   * (en Vercel no se pueden mantener).
+   */
+  app.get('/api/app/version', authCliente, async (req, res) => {
+    try {
+      const cid = req.cliente.id;
+      const consultas = [
+        ['SELECT c.*,u.nombre AS asesora,u.codigo_asesora FROM clientes c LEFT JOIN usuarios u ON u.id=c.asesora_id WHERE c.id=$1'],
+        ['SELECT e.*,k.numero AS contenedor,k.fecha_salida,k.fecha_estimada,k.fecha_llegada FROM etiquetas e LEFT JOIN contenedores k ON k.id=e.contenedor_id WHERE e.cliente_id=$1 ORDER BY e.id'],
+        ['SELECT l.* FROM etiqueta_lotes l JOIN etiquetas e ON e.id=l.etiqueta_id WHERE e.cliente_id=$1 ORDER BY l.id'],
+        ['SELECT f.id,f.titulo,f.lugar FROM etiqueta_fotos f JOIN etiquetas e ON e.id=f.etiqueta_id WHERE e.cliente_id=$1 ORDER BY f.id'],
+        ['SELECT MAX(id) AS ultimo FROM cliente_avisos WHERE cliente_id=$1'],
+      ];
+      const huella = crypto.createHash('sha1');
+      for (const [sql] of consultas) huella.update(JSON.stringify((await db.query(sql, [cid])).rows));
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ version: huella.digest('hex').slice(0, 20) });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'No se pudo revisar si hay cambios' });
+    }
+  });
+
   app.get('/api/app/etiquetas', authCliente, async (req, res) => {
     try {
       const r = await db.query('SELECT * FROM etiquetas WHERE cliente_id=$1 ORDER BY id DESC', [req.cliente.id]);
@@ -427,6 +452,23 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: 'No se pudo guardar la clave' });
+    }
+  });
+
+  /** Quita el acceso a la app: la sesión abierta en el teléfono deja de valer y no se le envían más avisos push. */
+  app.delete('/api/clientes/:id/clave', auth, async (req, res) => {
+    try {
+      const id = intId(req.params.id);
+      const r = await db.query('SELECT id,codigo_cliente,asesora_id FROM clientes WHERE id=$1', [id]);
+      if (!r.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
+      if (req.user.rol !== 'admin' && r.rows[0].asesora_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso' });
+      await db.query('UPDATE clientes SET clave_hash=NULL WHERE id=$1', [id]);
+      await db.query('DELETE FROM cliente_dispositivos WHERE cliente_id=$1', [id]);
+      await logAction(req.user.id, `Acceso a la app de ${r.rows[0].codigo_cliente}`, 'clientes', id, 'Se quitó el acceso a la app móvil.');
+      res.json({ ok: true });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'No se pudo quitar el acceso' });
     }
   });
 
