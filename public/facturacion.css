@@ -74,3 +74,11 @@
 .wt-sol{margin:0}
 .wt-sol.is-done{opacity:.6}
 .fx-box textarea,.field textarea{width:100%;border:1px solid var(--line);background:var(--paper);border-radius:12px;padding:10px 12px;font:inherit;color:var(--ink);resize:vertical}
+/* Búsqueda en 1688 (importador) */
+.wt-busqueda{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;max-height:420px;overflow:auto;padding:2px}
+.wt-resultado{position:relative;display:flex;flex-direction:column;gap:4px;padding:8px;border:1px solid var(--line);border-radius:12px;background:var(--paper);cursor:pointer;font-size:13px;line-height:1.3}
+.wt-resultado:has(input:checked){border-color:var(--ink);box-shadow:0 0 0 2px var(--amber) inset}
+.wt-resultado input{position:absolute;top:10px;left:10px;width:18px;height:18px;accent-color:var(--ink)}
+.wt-resultado img,.wt-sinfoto{width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;background:var(--sand)}
+.wt-sinfoto{display:grid;place-items:center;color:var(--muted);font-size:12px}
+.wt-resultado a{font-size:12px}

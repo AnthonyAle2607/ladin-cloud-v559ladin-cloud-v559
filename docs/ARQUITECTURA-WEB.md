@@ -160,6 +160,15 @@ revisa, pone cupo y contenedor, y publica.
   unidad, +20 % de empaque y aviso de que es aproximado) + margen (`TIENDA_MARGEN_PCT`, 35 %). Tasa: `TIENDA_TASA_CNY`.
 - **Fotos del proveedor:** `POST /api/tienda/admin/productos/:id/imagenes-remotas` solo baja de dominios de mercados
   chinos (alicdn, 1688, taobao, tmall, yiwugo…), por HTTPS, sin redirecciones, con tope de 6 MB y validando los bytes.
+- **Búsqueda y enlaces con Apify** (`IMPORT_APIFY_TOKEN`; actor `hezgLkHcDL7dwaDHo`, «1688 Product Scraper», de pago por
+  producto): el panel lanza el trabajo (`POST /api/tienda/admin/importar/apify` con `q` o `enlaces`) y consulta cada 4 s
+  (`GET …/importar/apify/:run`) hasta que termina: así ninguna llamada pasa de los 30 s de Vercel. La búsqueda devuelve
+  tarjetas con título traducido, foto, precio, pedido mínimo y proveedor; las marcadas se descargan en un solo trabajo y
+  cada ficha (`crudo`) la traduce y normaliza la IA antes de crear su borrador. El actor no trae medidas de la caja:
+  el precio sugerido avisa que no incluye flete. Probado con un Apify simulado (misma API y forma de salida).
+- **Búsqueda con otro intermediario:** `IMPORT_1688_BUSQUEDA_URL` (plantilla con `{q}`, `{pagina}`, `{desde}`, `{clave}`).
+  La lista de productos se encuentra en la respuesta sin depender de su formato (OTAPI, TMAPI, Apify…); si no es JSON,
+  la saca la IA.
 - **Velocidad:** usa primero los modelos «lite» (`IMPORT_IA_MODELO` para fijar otro orden): una ficha se lee en
   4–10 s; con el modelo que razona tardaba ~30 s, al límite de Vercel.
 - Probado con una ficha real de 1688 (texto y captura). La tienda pública no expone el origen ni el costo.
