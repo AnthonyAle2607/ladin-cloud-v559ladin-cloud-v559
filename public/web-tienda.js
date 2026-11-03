@@ -315,9 +315,18 @@
   async function importarModal() {
     let estado;
     try { estado = await api('/api/tienda/admin/importar/estado'); } catch (e) { return toast(e.message); }
+    // Apify sirve para las dos cosas: buscar por palabra e importar por enlace.
+    estado.busqueda = estado.busqueda || estado.apify;
+    estado.api = estado.api || estado.apify;
+    estadoImportador = estado;
     openModal('Importar producto desde 1688', `
       <p class="fx-muted" style="margin:0 0 10px">Arma un <b>borrador sin publicar</b> con el nombre y la descripción traducidos y un precio sugerido. Tú lo revisas, pones el cupo y el contenedor, y lo publicas.</p>
       ${estado.ia ? '' : '<p class="fx-bad">La IA no está configurada en el servidor (IA_PROVEEDOR e IA_API_KEY): el importador no puede leer productos.</p>'}
+      <div class="fx-box" style="margin:0 0 12px"><h3>Buscar en 1688</h3>
+        ${estado.busqueda ? `<form id="wtBusForm" class="row" style="gap:8px;align-items:flex-end"><div class="field" style="flex:1;margin:0"><label for="wtBusQ">Qué buscas (español, inglés o chino)</label><input id="wtBusQ" maxlength="120" placeholder="freidora de aire · air fryer · 空气炸锅" autocomplete="off"></div><button class="btn btn-secondary" id="wtBusBoton" type="submit">Buscar</button></form>
+          <div id="wtBusResultados"></div>`
+        : '<p class="fx-muted" style="margin:0">La búsqueda se activa al configurar la API de un proveedor de datos (IMPORT_1688_BUSQUEDA_URL e IMPORT_1688_CLAVE en Vercel). Mientras tanto, importa por enlace con capturas o texto.</p>'}
+      </div>
       <div class="fx-grid">${field('wtImpUrl', 'Enlace del producto (1688, Taobao, Yiwugo…)', '', 'url', 'placeholder="https://detail.1688.com/offer/…html"')}${field('wtImpCantidad', 'Cantidad que piensas comprar', '100', 'number', 'min="1" step="1" title="Elige el precio por cantidad que aplica"')}</div>
       <p class="fx-muted" style="margin:6px 0 10px">${estado.api ? 'Con el enlace basta: el servidor consulta la API del proveedor de datos. Para varios a la vez, pega abajo un enlace por línea.' : 'Aún no hay API de un proveedor de datos: el enlace se guarda como referencia. Sube <b>capturas</b> de la página (precio por cantidad, variantes y la tabla de la caja, 装箱) o <b>pega el texto</b> de la página. Con «Crear y seguir con otro» encadenas varios sin cerrar esta ventana.'}</p>
       ${estado.api ? `<div class="fx-grid"><div class="field"><label for="wtImpVarios">Varios enlaces (uno por línea)</label><textarea id="wtImpVarios" rows="3" maxlength="20000" placeholder="https://detail.1688.com/offer/…html"></textarea></div></div>` : ''}
@@ -328,8 +337,12 @@
       <div id="wtImpResultado"></div>`,
       `<button class="btn btn-secondary" id="modalCancel">Cancelar</button><button class="btn btn-primary" id="wtImpLeer" ${estado.ia ? '' : 'disabled'}>Leer producto</button>`);
     $('modalCancel').onclick = closeModal;
+    if (estado.busqueda) $('wtBusForm').onsubmit = (e) => { e.preventDefault(); buscarEn1688(1, estado); };
     $('wtImpLeer').onclick = async () => {
-      const varios = ($('wtImpVarios')?.value || '').split(/\s+/).filter((u) => /^https?:\/\//.test(u)).slice(0, 50);
+      let varios = ($('wtImpVarios')?.value || '').split(/\s+/).filter((u) => /^https?:\/\//.test(u)).slice(0, 50);
+      // Con Apify, un solo enlace (sin capturas ni texto) también se importa por la API.
+      const soloEnlace = $('wtImpUrl').value.trim();
+      if (!varios.length && estado.apify && soloEnlace && !$('wtImpTexto').value.trim() && !$('wtImpCapturas').files?.length) varios = [soloEnlace];
       if (varios.length) {
         const boton = $('wtImpLeer');
         boton.disabled = true;
@@ -429,11 +442,103 @@
     return { ...r, fotosTexto };
   }
 
+  let estadoImportador = {};
+
+  /**
+   * Apify: lanza el trabajo y consulta cada 4 s hasta que termine (cada consulta es corta: cabe en Vercel).
+   * `aviso` recibe el texto de progreso. Devuelve { resultados, fichas }.
+   */
+  async function trabajoApify(cuerpo, aviso) {
+    const { run } = await api('/api/tienda/admin/importar/apify', { method: 'POST', body: JSON.stringify(cuerpo) });
+    const inicio = Date.now();
+    while (Date.now() - inicio < 6 * 60 * 1000) {
+      await new Promise((r) => setTimeout(r, 4000));
+      aviso(`Trabajando en Apify… ${Math.round((Date.now() - inicio) / 1000)} s`);
+      const r = await api(`/api/tienda/admin/importar/apify/${encodeURIComponent(run)}`);
+      if (r.estado === 'listo') return r;
+      if (r.estado === 'fallo') throw new Error(r.error);
+    }
+    throw new Error('Apify tardó más de 6 minutos. Revisa el trabajo en apify.com.');
+  }
+
+  /** Búsqueda por palabra en 1688 (API del proveedor de datos): tarjetas para marcar e importar como borradores. */
+  async function buscarEn1688(pagina, estado) {
+    const q = $('wtBusQ').value.trim();
+    if (q.length < 2) return toast('Escribe qué buscar');
+    const caja = $('wtBusResultados');
+    const boton = $('wtBusBoton');
+    boton.disabled = true; boton.textContent = 'Buscando…';
+    caja.innerHTML = '<p class="fx-muted" id="wtBusAviso">Buscando en 1688 y traduciendo los títulos…</p>';
+    try {
+      const r = estado.apify
+        ? await trabajoApify({ q, max: 20 * pagina }, (t) => { if ($('wtBusAviso')) $('wtBusAviso').textContent = `${t} (una búsqueda suele tardar menos de un minuto)`; })
+        : await api('/api/tienda/admin/importar/buscar', { method: 'POST', body: JSON.stringify({ q, pagina }) });
+      // En Apify, «más resultados» repite la búsqueda pidiendo más: se muestran solo los nuevos.
+      if (estado.apify && pagina > 1) r.resultados = r.resultados.slice(20 * (pagina - 1));
+      const precio = (x) => (x.precio ? `${x.moneda === 'USD' ? 'US$' : '¥'}${Number(x.precio).toLocaleString('es-VE', { maximumFractionDigits: 2 })}` : '');
+      caja.innerHTML = r.resultados.length ? `
+        <div class="wt-busqueda">${r.resultados.map((x, i) => `<label class="wt-resultado">
+          <input type="checkbox" data-bus="${i}" aria-label="Elegir ${esc(x.titulo)}">
+          ${x.imagen ? `<img src="${esc(x.imagen)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<span class="wt-sinfoto">Sin foto</span>'}
+          <b>${esc(x.titulo)}</b>
+          <small class="fx-muted">${[precio(x), x.pedidoMinimo ? `mín. ${x.pedidoMinimo}` : '', x.ubicacion].filter(Boolean).map(esc).join(' · ')}</small>
+          ${x.proveedor ? `<small class="fx-muted">${esc(x.proveedor)}</small>` : ''}
+          <a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">Ver en 1688</a></label>`).join('')}</div>
+        <div class="row" style="margin-top:10px;align-items:center">
+          ${pagina > 1 ? '<button class="btn btn-secondary btn-sm" id="wtBusAnterior" type="button">‹ Anterior</button>' : ''}
+          <button class="btn btn-secondary btn-sm" id="wtBusSiguiente" type="button">Más resultados ›</button>
+          <button class="btn btn-primary btn-sm" id="wtBusImportar" type="button" disabled>Importar seleccionados</button>
+          <span class="fx-muted">Página ${pagina}</span></div>`
+        : '<p class="fx-muted">Sin resultados. Prueba con otra palabra (en chino suele encontrar más).</p>';
+      if (!r.resultados.length) return;
+      const marcados = () => [...caja.querySelectorAll('[data-bus]:checked')].map((c) => r.resultados[+c.dataset.bus]);
+      caja.querySelectorAll('[data-bus]').forEach((c) => (c.onchange = () => { const n = marcados().length; $('wtBusImportar').disabled = !n; $('wtBusImportar').textContent = n ? `Importar ${n} seleccionado(s)` : 'Importar seleccionados'; }));
+      $('wtBusSiguiente').onclick = () => buscarEn1688(pagina + 1, estado);
+      if ($('wtBusAnterior')) $('wtBusAnterior').onclick = () => buscarEn1688(pagina - 1, estado);
+      $('wtBusImportar').onclick = async () => {
+        const elegidos = marcados();
+        if (!estado.api) return toast('Para importar falta IMPORT_1688_URL (la consulta de cada producto) en el servidor');
+        $('wtBusImportar').disabled = true;
+        await importarVariosEnlaces(elegidos.map((x) => x.url), Number($('wtImpCantidad').value) || 100);
+        $('wtBusImportar').disabled = false;
+        $('wtImpResultado').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      };
+    } catch (e) { caja.innerHTML = `<p class="fx-bad">${esc(e.message)}</p>`; }
+    finally { boton.disabled = false; boton.textContent = 'Buscar'; }
+  }
+
   /** Con API del proveedor de datos: una lista de enlaces se convierte en borradores, uno tras otro. */
   async function importarVariosEnlaces(urls, cantidad) {
     const caja = $('wtImpResultado');
     caja.innerHTML = `<div class="fx-box" style="margin-top:12px"><h3>Importando ${urls.length} enlace(s)</h3><ol id="wtImpLista" style="margin:0;padding-left:20px"></ol><p class="fx-muted" id="wtImpProgreso"></p></div>`;
     let ok = 0;
+    if (estadoImportador.apify) {
+      // Apify descarga todas las fichas en un solo trabajo; luego la IA traduce cada una y se crea su borrador.
+      let fichas;
+      try { fichas = (await trabajoApify({ enlaces: urls }, (t) => { $('wtImpProgreso').textContent = `${t}: descargando ${urls.length} ficha(s) de 1688…`; })).fichas; }
+      catch (e) { $('wtImpProgreso').innerHTML = `<span class="fx-bad">${esc(e.message)}</span>`; return; }
+      for (const [i, f] of fichas.entries()) {
+        $('wtImpProgreso').textContent = `Traduciendo y creando ${i + 1} de ${fichas.length}…`;
+        const li = document.createElement('li');
+        li.textContent = f.url;
+        $('wtImpLista').appendChild(li);
+        try {
+          const datos = new FormData();
+          datos.append('crudo', f.crudo);
+          if (f.url) datos.append('url', f.url);
+          datos.append('cantidad', String(cantidad));
+          const r = await fetch('/api/tienda/admin/importar', { method: 'POST', headers: { Authorization: `Bearer ${session.token}` }, body: datos });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+          if (!j.sugerido) throw new Error('sin precio: revísalo con capturas');
+          const b = await crearBorradorImportado(j.datos, j.sugerido, f.url);
+          ok++;
+          li.innerHTML = `<b>${esc(j.datos.nombre)}</b> · $${j.sugerido.precioUsd}${esc(b.fotosTexto)} <span class="fx-pill pagada">Borrador</span>`;
+        } catch (e) { li.innerHTML = `${esc(f.url)} <span class="fx-bad">${esc(e.message)}</span>`; }
+      }
+      $('wtImpProgreso').textContent = `Listo: ${ok} de ${urls.length} borrador(es). ${fichas.length < urls.length ? `Apify no devolvió ${urls.length - fichas.length} enlace(s). ` : ''}Revísalos en la lista de productos, pon el cupo y publícalos.`;
+      return;
+    }
     for (const [i, url] of urls.entries()) {
       $('wtImpProgreso').textContent = `Leyendo ${i + 1} de ${urls.length}…`;
       const li = document.createElement('li');
