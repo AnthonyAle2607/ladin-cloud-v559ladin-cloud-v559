@@ -181,24 +181,30 @@ function registrar(app, { db, auth, intId, logAction }) {
        WHERE ${where} ORDER BY p.orden, p.id`, params)).rows;
     if (!productos.length) return [];
     const ids = productos.map((p) => Number(p.id));
-    const variantes = (await db.query('SELECT producto_id, SUM(CASE WHEN activa = TRUE AND cupo > 0 THEN 1 ELSE 0 END) AS disponibles FROM tienda_variantes WHERE producto_id = ANY($1::int[]) GROUP BY producto_id', [ids])).rows;
+    // Variantes con cupo, en orden: la primera es la que agrega el botón rápido «Agregar al carrito» de la tarjeta.
+    const variantes = (await db.query('SELECT id, producto_id, nombre, precio_usd FROM tienda_variantes WHERE producto_id = ANY($1::int[]) AND activa = TRUE AND cupo > 0 ORDER BY orden, id', [ids])).rows;
     const imagenes = (await db.query('SELECT id, producto_id FROM tienda_imagenes WHERE producto_id = ANY($1::int[]) ORDER BY orden, id', [ids])).rows;
-    const disp = new Map(variantes.map((v) => [Number(v.producto_id), num(v.disponibles)]));
+    const primera = new Map();
+    variantes.forEach((v) => { if (!primera.has(Number(v.producto_id))) primera.set(Number(v.producto_id), v); });
     const foto = new Map();
     imagenes.forEach((i) => { if (!foto.has(Number(i.producto_id))) foto.set(Number(i.producto_id), urlImagen(i.id)); });
-    return productos.map((p) => ({
-      id: String(p.id),
-      slug: p.slug,
-      nombre: p.nombre,
-      categoria: p.categoria || '',
-      categoriaSlug: p.categoria_slug || '',
-      precioUsd: num(p.precio_usd),
-      precioAntesUsd: p.precio_antes_usd != null ? num(p.precio_antes_usd) : null,
-      imagen: foto.get(Number(p.id)) || null,
-      contenedor: p.contenedor || null,
-      llegada: fechaISO(p.llegada),
-      agotado: !disp.get(Number(p.id)),
-    }));
+    return productos.map((p) => {
+      const v = primera.get(Number(p.id));
+      return {
+        id: String(p.id),
+        slug: p.slug,
+        nombre: p.nombre,
+        categoria: p.categoria || '',
+        categoriaSlug: p.categoria_slug || '',
+        precioUsd: num(p.precio_usd),
+        precioAntesUsd: p.precio_antes_usd != null ? num(p.precio_antes_usd) : null,
+        imagen: foto.get(Number(p.id)) || null,
+        contenedor: p.contenedor || null,
+        llegada: fechaISO(p.llegada),
+        agotado: !v,
+        varianteRapida: v ? { id: String(v.id), nombre: v.nombre, precioUsd: v.precio_usd != null ? num(v.precio_usd) : num(p.precio_usd) } : null,
+      };
+    });
   }
 
   app.get('/api/tienda/catalogo', async (req, res) => {
@@ -262,6 +268,8 @@ function registrar(app, { db, auth, intId, logAction }) {
       if (!contenido) return res.status(404).json({ error: 'Imagen no encontrada' });
       res.setHeader('Content-Type', i.mime_type);
       res.setHeader('Cache-Control', 'public, max-age=86400');
+      // La web pública vive en otro dominio: sin esto, helmet (same-origin) hace que el navegador bloquee la foto.
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
       res.send(contenido);
     } catch (e) {
       console.error(e);
