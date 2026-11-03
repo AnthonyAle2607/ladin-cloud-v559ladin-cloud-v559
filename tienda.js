@@ -63,7 +63,7 @@ const marcaUTC = (d) => d.toISOString().replace('T', ' ').slice(0, 19);
 /** Para responder: siempre ISO con zona (Postgres entrega Date; SQLite, texto en UTC sin zona). */
 const instanteISO = (v) => {
   if (!v) return null;
-  const d = v instanceof Date ? v : new Date(String(v).replace(' ', 'T') + (/[zZ]|[+-]dd:?dd$/.test(String(v)) ? '' : 'Z'));
+  const d = v instanceof Date ? v : new Date(String(v).replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(v)) ? '' : 'Z'));
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
 const listaJSON = (v) => { try { const a = JSON.parse(v || '[]'); return Array.isArray(a) ? a.map(String) : []; } catch { return []; } };

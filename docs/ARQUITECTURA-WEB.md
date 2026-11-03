@@ -116,8 +116,11 @@ Estados del pedido: `pendiente_pago → pago_reportado → pagado → en_camino 
 ## Fases
 
 1. **Base de la arquitectura (hecha):** esquema, migración, API pública y del panel, tarifas compartidas, pruebas.
-2. **Panel:** pantallas para publicar contenedores en la web, productos y fotos, pedidos y solicitudes; pasar la
-   calculadora del panel a `/api/web/tarifas` para que nunca se separen.
+2. **Panel (hecho, `public/web-tienda.js`, solo administrador):** menú «Web y tienda» con *Productos* (variantes y
+   cupo, fotos, categorías, destinos), *Pedidos web* (confirmar pago, en camino, entregado, cancelar; WhatsApp al
+   cliente) y *Solicitudes web* (reservas del cotizador con su estimado, contacto, marcar atendida); en la ficha del
+   contenedor, «Publicar en la web» (cierre, capacidad, ruta). Pendiente: pasar la calculadora del panel a
+   `/api/web/tarifas` para que nunca se separen.
 3. **Web (`criollo-cargo-web`):** Next.js con las secciones del diseño: inicio, zarpes, rastreo, cotizador, preguntas,
    tienda, ficha, carrito (en el navegador) y seguimiento del pedido. Dominio y SEO.
 4. **Después:** avisos por WhatsApp o correo al cambiar el pedido, enlazar pedido pagado con cliente y etiqueta,

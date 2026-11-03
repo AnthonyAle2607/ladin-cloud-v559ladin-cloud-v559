@@ -61,3 +61,16 @@
 .periodo-bar label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700}
 .periodo-bar select{border:1px solid var(--line);background:var(--paper);border-radius:8px;padding:6px 8px;font:inherit;color:var(--ink)}
 .periodo-nota{font-size:12px;color:var(--amber-d)}
+
+/* Web y tienda (public/web-tienda.js) */
+.wt-check{display:flex;align-items:center;gap:8px;margin:10px 0;font-weight:600;cursor:pointer}
+.wt-check input{width:18px;height:18px;accent-color:var(--ink)}
+.wt-fotos{display:flex;flex-wrap:wrap;gap:10px}
+.wt-foto{position:relative;margin:0;width:110px;height:110px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--sand);display:grid;place-items:center}
+.wt-foto img{width:100%;height:100%;object-fit:cover}
+.wt-foto button{position:absolute;top:6px;right:6px;padding:2px 8px}
+.wt-foto:first-child::after{content:'Portada';position:absolute;left:6px;bottom:6px;font-size:11px;font-weight:700;background:var(--ink);color:var(--cream);border-radius:999px;padding:2px 8px}
+.wt-solicitudes{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.wt-sol{margin:0}
+.wt-sol.is-done{opacity:.6}
+.fx-box textarea,.field textarea{width:100%;border:1px solid var(--line);background:var(--paper);border-radius:12px;padding:10px 12px;font:inherit;color:var(--ink);resize:vertical}

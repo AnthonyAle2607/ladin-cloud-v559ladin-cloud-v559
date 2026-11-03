@@ -194,7 +194,9 @@ function containerOut(r) {
     departure: formatDateOnly(r.fecha_salida),
     eta: formatDateOnly(r.fecha_estimada),
     status: r.estado,
-    notes: r.observaciones || ''
+    notes: r.observaciones || '',
+    // Web pública (web-publica.js): si sale en el tablero de zarpes, cierre de carga, capacidad y ruta
+    web: { publish: !!r.publicar_web, closing: formatDateOnly(r.fecha_cierre), capacityCbm: r.capacidad_cbm != null ? Number(r.capacidad_cbm) : 68, route: r.ruta || '' }
   };
 }
 
@@ -524,7 +526,10 @@ async function getBootstrap(user) {
     user.rol === 'admin' ? [] : [user.id]
   );
 
-  const containersQ = await db.query("SELECT id,numero,origen,TO_CHAR(fecha_salida,'YYYY-MM-DD') AS fecha_salida,TO_CHAR(fecha_estimada,'YYYY-MM-DD') AS fecha_estimada,estado,observaciones FROM contenedores ORDER BY id DESC");
+  const COLS_CONTENEDOR = "id,numero,origen,TO_CHAR(fecha_salida,'YYYY-MM-DD') AS fecha_salida,TO_CHAR(fecha_estimada,'YYYY-MM-DD') AS fecha_estimada,estado,observaciones";
+  // Las columnas de la web llegan con la migración 20261103000000_web_tienda.sql; sin ella el panel sigue funcionando.
+  const containersQ = await db.query(`SELECT ${COLS_CONTENEDOR},publicar_web,TO_CHAR(fecha_cierre,'YYYY-MM-DD') AS fecha_cierre,capacidad_cbm,ruta FROM contenedores ORDER BY id DESC`)
+    .catch(() => db.query(`SELECT ${COLS_CONTENEDOR} FROM contenedores ORDER BY id DESC`));
   const historyQ = user.rol === 'admin' ? await db.query('SELECT * FROM historial ORDER BY fecha DESC LIMIT 200') : { rows: [] };
   const remindersQ = user.rol === 'admin' ? await db.query('SELECT * FROM recordatorios ORDER BY fecha_hora ASC') : await db.query('SELECT * FROM recordatorios WHERE asesora_id=$1 ORDER BY fecha_hora ASC', [user.id]);
   const complaintsQ = user.rol === 'admin' ? await db.query('SELECT * FROM quejas ORDER BY creado_en DESC') : await db.query('SELECT * FROM quejas WHERE usuario_id=$1 ORDER BY creado_en DESC', [user.id]);

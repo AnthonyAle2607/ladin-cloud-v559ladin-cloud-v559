@@ -26,6 +26,13 @@ const fechaISO = (v) => {
   return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 };
 
+/** Instante en ISO con zona (Postgres entrega Date; SQLite, texto UTC sin zona que el navegador leería como hora local). */
+const instanteISO = (v) => {
+  if (!v) return null;
+  const d = v instanceof Date ? v : new Date(String(v).replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(v)) ? '' : 'Z'));
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
 async function ensureSchema(db) {
   // Lo que la web necesita de cada contenedor; el panel los edita (PUT /api/contenedores/:id/web).
   await db.query('ALTER TABLE contenedores ADD COLUMN IF NOT EXISTS publicar_web BOOLEAN NOT NULL DEFAULT FALSE');
@@ -199,7 +206,7 @@ function registrar(app, { db, auth, intId, logAction }) {
       res.json(r.rows.map((s) => ({
         id: String(s.id), tipo: s.tipo, nombre: s.nombre, telefono: s.telefono || '', email: s.email || '', estado: s.estado_venezuela || '',
         mensaje: s.mensaje || '', cotizacion: s.datos ? JSON.parse(s.datos) : null, productoId: s.producto_id ? String(s.producto_id) : null,
-        atendida: !!s.atendida, creadoEn: s.creado_en,
+        atendida: !!s.atendida, creadoEn: instanteISO(s.creado_en),
       })));
     } catch (e) {
       console.error(e);
