@@ -41,7 +41,7 @@ const COLUMNAS = [
 
 const EJEMPLOS = [
   ['Freidora de aire 5,5 L', 'Electro', 79, 95, 'Color', 'Negro | Blanco', '20 | 8', '', 'FRE-55-N | FRE-55-B', 'TGHU-4410273', 'Foshan, China', 'Cesta antiadherente de 5,5 litros.\nPanel digital con 8 programas.', '1700 W, 110 V | 80–200 °C', '', '', 'sí', 1],
-  ['Juego de ollas 10 piezas', 'Hogar', 54, '', 'Presentación', '10 piezas | 6 piezas', '15 | 10', '54 | 39', '', 'TGHU-4410273', 'Chaozhou, China', 'Acero inoxidable con fondo triple capa.', 'Acero 18/10 | Tapas de vidrio', '', '', 'no', 2],
+  ['Juego de ollas 10 piezas', 'Hogar', 54, '', 'Presentación', '10 piezas | 6 piezas', '', '54 | 39', '', 'TGHU-4410273', 'Chaozhou, China', 'Acero inoxidable con fondo triple capa.', 'Acero 18/10 | Tapas de vidrio', '', '', 'no', 2],
 ];
 
 const INSTRUCCIONES = [
@@ -50,7 +50,7 @@ const INSTRUCCIONES = [
   ['Obligatorias: Nombre y Precio USD. Las demás columnas son opcionales y pueden ir en cualquier orden.'],
   ['Si el nombre coincide con un producto que ya existe, se ACTUALIZA (precio, cupo, textos, variantes). Si no, se crea.'],
   ['Variantes: separadas por | (por ejemplo «Negro | Blanco»). Sin variantes, el producto queda con una variante «Única».'],
-  ['Cupo: unidades que caben en el contenedor. Un número para todas las variantes, o uno por variante separado por | en el mismo orden.'],
+  ['Cupo: opcional. Vacío o «sin límite» = siempre se puede comprar. Con un número, se vende hasta ese número y luego se agota. Uno para todas las variantes, o uno por variante separado por | en el mismo orden.'],
   ['Precio por variante USD: opcional, uno por variante separado por |; vacío = el precio del producto.'],
   ['Categoría: si no existe, se crea. Contenedor: su número tal como está en el panel (por ejemplo TGHU-4410273).'],
   ['Descripción: un párrafo por línea (Alt+Enter en Excel). Especificaciones: separadas por | o una por línea.'],
@@ -108,10 +108,11 @@ function filaAProducto(celdas, mapa) {
 
   const nombresVar = partes(v('variantes')).slice(0, 20);
   const listaVar = nombresVar.length ? nombresVar : ['Única'];
-  const cupos = partes(v('cupo')).map(numero);
+  // Vacío o «sin límite» → null (sin límite): el producto siempre se puede comprar.
+  const cupos = partes(v('cupo')).map((c) => (/^(sin\s*l[ií]mite|ilimitado|∞|-)$/i.test(c) ? null : numero(c)));
   const precios = partes(v('preciosVariante')).map(numero);
   const skus = partes(v('skus'));
-  if (cupos.some((c) => !Number.isInteger(c) || c < 0)) errores.push('El cupo debe ser un número entero (0 o más)');
+  if (cupos.some((c) => c !== null && (!Number.isInteger(c) || c < 0))) errores.push('El cupo debe ser un número entero (0 o más), «sin límite» o vacío');
   if (cupos.length > 1 && cupos.length !== listaVar.length) errores.push(`Hay ${listaVar.length} variante(s) y ${cupos.length} cupos: pon uno por variante o uno solo para todas`);
   if (precios.length && precios.length !== listaVar.length) errores.push(`Hay ${listaVar.length} variante(s) y ${precios.length} precios por variante`);
   if (precios.some((p) => !(p > 0))) errores.push('Los precios por variante deben ser números mayores que cero');
@@ -123,7 +124,7 @@ function filaAProducto(celdas, mapa) {
     precioUsd: precio,
     precioAntesUsd: antes ?? '',
     nombreVariante: texto(v('tipoVariante'), 40) || 'Presentación',
-    variantes: listaVar.map((n, i) => ({ nombre: texto(n, 80), sku: texto(skus[i], 60), cupo: cupos.length === 1 ? cupos[0] : cupos[i] ?? 0, precioUsd: precios[i] ?? null })),
+    variantes: listaVar.map((n, i) => ({ nombre: texto(n, 80), sku: texto(skus[i], 60), cupo: cupos.length === 1 ? cupos[0] : cupos[i] ?? null, precioUsd: precios[i] ?? null })),
     origen: texto(v('origen'), 120),
     descripcion: String(v('descripcion') ?? '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean),
     especificaciones: lineas(v('especificaciones')),
@@ -182,7 +183,7 @@ function registrar(app, { db, auth, logAction, persistirProducto, slugDe }) {
         if (p.contenedor && !contenedores.has(p.contenedor.toUpperCase())) p.errores.push(`No existe el contenedor «${p.contenedor}» en el panel`);
         const avisos = [];
         if (p.categoria && !categorias.has(p.categoria.toLowerCase())) avisos.push(`Se creará la categoría «${p.categoria}»`);
-        if (p.datos.activo && p.datos.variantes.every((v) => !v.cupo)) avisos.push('Se publica sin cupo: aparecerá agotado');
+        if (p.datos.activo && p.datos.variantes.every((v) => v.cupo === 0)) avisos.push('Se publica con cupo 0: aparecerá agotado (deja el cupo vacío para venderlo sin límite)');
         return { fila, accion: existentes.has(slug) ? 'actualizar' : 'crear', ...p, avisos };
       });
       res.json({
@@ -238,7 +239,9 @@ function registrar(app, { db, auth, logAction, persistirProducto, slugDe }) {
           resultados.push({ fila: f.fila, ok: true, id: r.body.id, accion: actual ? 'actualizado' : 'creado', traerFotos: nFotos === 0 && Array.isArray(f.fotos) && f.fotos.length > 0, aviso: r.body.aviso });
         } catch (e) {
           console.error('Carga masiva, fila', f.fila, e.message);
-          resultados.push({ fila: f.fila, ok: false, error: 'Error al guardar esta fila' });
+          // Sin la migración 20261106000000_cupo_sin_limite.sql la base no acepta «sin límite» (cupo vacío).
+          const sinMigracion = e?.code === '23514' && /cupo/.test(`${e.constraint || ''} ${e.message || ''}`);
+          resultados.push({ fila: f.fila, ok: false, error: sinMigracion ? 'Cupo vacío = sin límite: falta aplicar la migración 20261106000000_cupo_sin_limite.sql (o pon un número de cupo)' : 'Error al guardar esta fila' });
         }
       }
       const hechas = resultados.filter((r) => r.ok).length;
