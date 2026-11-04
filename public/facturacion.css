@@ -85,3 +85,12 @@
 .wt-resultado img,.wt-sinfoto{width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;background:var(--sand)}
 .wt-sinfoto{display:grid;place-items:center;color:var(--muted);font-size:12px}
 .wt-resultado a{font-size:12px}
+/* Edición en lote de productos */
+.wt-sel{width:36px}
+.wt-sel input{width:18px;height:18px;accent-color:var(--ink);cursor:pointer}
+.table tr.wt-marcada td{background:color-mix(in srgb,var(--amber) 12%,transparent)}
+.wt-lote-barra{position:sticky;top:8px;z-index:5;display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px;padding:10px 14px;border-radius:999px;background:var(--ink);color:var(--cream)}
+.wt-lote-barra b{margin-right:auto;font-size:14px}
+.wt-lote-barra .btn-primary{background:var(--amber);color:var(--ink);border-color:var(--amber)}
+.wt-lote-barra .btn-secondary{background:transparent;color:var(--cream);border-color:rgba(236,232,222,.4)}
+.wt-lote-barra[hidden]{display:none}

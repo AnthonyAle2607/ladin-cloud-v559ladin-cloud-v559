@@ -89,6 +89,20 @@
   let categorias = [];
   let filtroProd = '';
   let filtroCat = '';
+  let filtroEstado = '';
+  /** Productos marcados para editar en lote (ids de la API). Sobrevive a recargar la lista. */
+  const seleccion = new Set();
+  let ultimoMarcado = null; // para marcar un rango con Mayús + clic
+
+  const cupoDe = (p) => p.variantes.filter((v) => v.activa).reduce((s, v) => s + v.cupo, 0);
+  const ESTADOS_LISTA = {
+    borradores: ['Borradores (ocultos)', (p) => !p.activo],
+    publicados: ['Publicados', (p) => p.activo],
+    sinCupo: ['Sin cupo', (p) => cupoDe(p) === 0],
+    sinContenedor: ['Sin contenedor', (p) => !p.contenedorId],
+    sinFotos: ['Sin fotos', (p) => !p.imagenes.length],
+  };
+  const contenedoresAbiertos = () => db.containers.filter((c) => !['done', 'closed'].includes(c.status));
 
   async function mostrarProductos() {
     page().innerHTML = cargando('Productos de la tienda');
@@ -108,11 +122,27 @@
       <div class="fx-toolbar">
         <input type="search" id="wtBuscar" placeholder="Buscar por nombre o contenedor" value="${esc(filtroProd)}" aria-label="Buscar productos">
         <select id="wtCat" aria-label="Categoría"><option value="">Todas las categorías</option>${categorias.map((c) => `<option value="${esc(c.id)}" ${filtroCat === c.id ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('')}</select>
+        <select id="wtEstado" aria-label="Estado"><option value="">Todos los estados</option>${Object.entries(ESTADOS_LISTA).map(([k, [t, f]]) => `<option value="${k}" ${filtroEstado === k ? 'selected' : ''}>${esc(t)} (${productos.filter(f).length})</option>`).join('')}</select>
       </div>
-      <div class="card section"><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th>Producto</th><th>Categoría</th><th>Contenedor</th><th class="fx-num">Precio</th><th class="fx-num">Cupo</th><th>Web</th><th></th></tr></thead><tbody id="wtFilas"></tbody></table></div></div>`;
+      <div class="wt-lote-barra" id="wtLoteBarra" hidden>
+        <b id="wtLoteCuenta"></b>
+        <button class="btn btn-primary btn-sm" type="button" id="wtLoteEditar">Editar en lote</button>
+        <button class="btn btn-secondary btn-sm" type="button" id="wtLotePublicar">Publicar</button>
+        <button class="btn btn-secondary btn-sm" type="button" id="wtLoteOcultar">Ocultar</button>
+        <button class="btn btn-secondary btn-sm" type="button" id="wtLoteLimpiar">Quitar selección</button>
+      </div>
+      <div class="card section"><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th class="wt-sel"><input type="checkbox" id="wtSelTodos" aria-label="Seleccionar todos los de la lista"></th><th>Producto</th><th>Categoría</th><th>Contenedor</th><th class="fx-num">Precio</th><th class="fx-num">Cupo</th><th>Web</th><th></th></tr></thead><tbody id="wtFilas"></tbody></table></div></div>`;
+    // Lo marcado que ya no existe (borrado o recargado) se quita de la selección.
+    for (const id of [...seleccion]) if (!productos.some((p) => p.id === id)) seleccion.delete(id);
     pintarProductos();
     $('wtBuscar').oninput = (e) => { filtroProd = e.target.value; pintarProductos(); };
     $('wtCat').onchange = (e) => { filtroCat = e.target.value; pintarProductos(); };
+    $('wtEstado').onchange = (e) => { filtroEstado = e.target.value; pintarProductos(); };
+    $('wtSelTodos').onchange = (e) => { filtrados().forEach((p) => (e.target.checked ? seleccion.add(p.id) : seleccion.delete(p.id))); pintarProductos(); };
+    $('wtLoteLimpiar').onclick = () => { seleccion.clear(); pintarProductos(); };
+    $('wtLoteEditar').onclick = () => loteEdicionModal();
+    $('wtLotePublicar').onclick = () => aplicarLote({ activo: true }, 'publicados');
+    $('wtLoteOcultar').onclick = () => aplicarLote({ activo: false }, 'ocultos');
     $('wtNuevo').onclick = () => productoModal();
     $('wtImportar').onclick = importarModal;
     $('wtLote').onclick = loteModal;
@@ -120,22 +150,110 @@
     $('wtDestinos').onclick = destinosModal;
   }
 
-  function pintarProductos() {
+  function filtrados() {
     const q = filtroProd.trim().toLowerCase();
+    const est = ESTADOS_LISTA[filtroEstado]?.[1];
+    return productos.filter((p) => (!filtroCat || p.categoriaId === filtroCat) && (!est || est(p)) && (!q || `${p.nombre} ${p.contenedor}`.toLowerCase().includes(q)));
+  }
+
+  function pintarProductos() {
     const cat = (id) => categorias.find((c) => c.id === id)?.nombre || '—';
-    const filas = productos.filter((p) => (!filtroCat || p.categoriaId === filtroCat) && (!q || `${p.nombre} ${p.contenedor}`.toLowerCase().includes(q)));
+    const filas = filtrados();
+    const marcadosVisibles = filas.filter((p) => seleccion.has(p.id)).length;
+    $('wtSelTodos').checked = filas.length > 0 && marcadosVisibles === filas.length;
+    $('wtSelTodos').indeterminate = marcadosVisibles > 0 && marcadosVisibles < filas.length;
+    $('wtLoteBarra').hidden = !seleccion.size;
+    $('wtLoteCuenta').textContent = `${seleccion.size} seleccionado(s)${seleccion.size > marcadosVisibles ? ` · ${seleccion.size - marcadosVisibles} fuera del filtro` : ''}`;
     $('wtFilas').innerHTML = filas.length
       ? filas.map((p) => {
-          const cupo = p.variantes.filter((v) => v.activa).reduce((s, v) => s + v.cupo, 0);
-          return `<tr><td><b>${esc(p.nombre)}</b><br><small class="fx-muted">/${esc(p.slug)} · ${p.variantes.filter((v) => v.activa).length} variante(s) · ${p.imagenes.length} foto(s)</small></td>
+          const cupo = cupoDe(p);
+          return `<tr class="${seleccion.has(p.id) ? 'wt-marcada' : ''}"><td class="wt-sel"><input type="checkbox" data-wt-sel="${esc(p.id)}" ${seleccion.has(p.id) ? 'checked' : ''} aria-label="Seleccionar ${esc(p.nombre)}"></td>
+            <td><b>${esc(p.nombre)}</b><br><small class="fx-muted">/${esc(p.slug)} · ${p.variantes.filter((v) => v.activa).length} variante(s) · ${p.imagenes.length} foto(s)</small></td>
             <td>${esc(cat(p.categoriaId))}</td><td>${p.contenedor ? `<span class="code-pill">${esc(p.contenedor)}</span>` : '<span class="fx-warn">Sin contenedor</span>'}</td>
             <td class="fx-num">${usd(p.precioUsd)}${p.precioAntesUsd ? `<br><small class="fx-muted"><s>${usd(p.precioAntesUsd)}</s></small>` : ''}</td>
             <td class="fx-num">${cupo || '<span class="fx-bad">0</span>'}</td>
             <td>${p.activo ? '<span class="fx-pill pagada">Publicado</span>' : '<span class="fx-pill anulada">Oculto</span>'}</td>
             <td><div class="fx-table-actions"><button class="btn btn-secondary btn-sm" data-wt-editar="${esc(p.id)}">Editar</button></div></td></tr>`;
         }).join('')
-      : `<tr><td colspan="7"><div class="empty compact">${productos.length ? 'Ningún producto coincide con el filtro.' : 'Todavía no hay productos. Crea el primero con «Nuevo producto».'}</div></td></tr>`;
+      : `<tr><td colspan="8"><div class="empty compact">${productos.length ? 'Ningún producto coincide con el filtro.' : 'Todavía no hay productos. Crea el primero con «Nuevo producto».'}</div></td></tr>`;
     document.querySelectorAll('[data-wt-editar]').forEach((b) => (b.onclick = () => productoModal(productos.find((p) => p.id === b.dataset.wtEditar))));
+    document.querySelectorAll('[data-wt-sel]').forEach((c) => (c.onclick = (e) => {
+      const id = c.dataset.wtSel;
+      const ids = filas.map((p) => p.id);
+      // Mayús + clic marca (o desmarca) todo el rango desde el último marcado.
+      const desde = e.shiftKey && ultimoMarcado ? ids.indexOf(ultimoMarcado) : -1;
+      const tramo = desde >= 0 ? ids.slice(Math.min(desde, ids.indexOf(id)), Math.max(desde, ids.indexOf(id)) + 1) : [id];
+      tramo.forEach((x) => (c.checked ? seleccion.add(x) : seleccion.delete(x)));
+      ultimoMarcado = id;
+      pintarProductos();
+    }));
+  }
+
+  /** Aplica cambios a todos los seleccionados en una sola llamada (una transacción en el servidor). */
+  async function aplicarLote(cambios, texto) {
+    const ids = [...seleccion];
+    if (!ids.length) return;
+    if (cambios.activo === true) {
+      // Se mira cómo quedará cada producto con los cambios de esta misma edición, no cómo está ahora.
+      const contenedor = (p) => ('contenedorId' in cambios ? cambios.contenedorId : p.contenedorId);
+      const cupo = (p) => ('cupo' in cambios ? cambios.cupo * p.variantes.filter((v) => v.activa).length : cupoDe(p));
+      const sin = productos.filter((p) => seleccion.has(p.id) && (!contenedor(p) || cupo(p) === 0)).length;
+      if (sin && !confirm(`${sin} de ${ids.length} no tienen contenedor o cupo: saldrán sin fecha de llegada o agotados. ¿Publicar igual?`)) return false;
+    }
+    try {
+      const r = await api('/api/tienda/admin/productos/lote', { method: 'PUT', body: JSON.stringify({ ids, cambios }) });
+      const avisos = [r.publicadosSinContenedor && `${r.publicadosSinContenedor} publicado(s) sin contenedor`, r.publicadosSinCupo && `${r.publicadosSinCupo} publicado(s) sin cupo`].filter(Boolean);
+      toast(`${r.actualizados} producto(s) ${texto}.${avisos.length ? ` Ojo: ${avisos.join(' y ')}.` : ''}`);
+      await mostrarProductos();
+      return true;
+    } catch (e) { toast(e.message); return false; }
+  }
+
+  function loteEdicionModal() {
+    const n = seleccion.size;
+    const opciones = (lista) => [['__', '— No cambiar —'], ...lista];
+    openModal(`Editar ${n} producto(s) a la vez`, `
+      <p class="fx-muted" style="margin:0 0 10px">Solo se cambia lo que elijas; lo que dejes en «No cambiar» queda como está en cada producto.</p>
+      <div class="fx-grid">
+        ${selectField('wtLContenedor', 'Viaja en el contenedor', opciones([['', 'Sin contenedor'], ...contenedoresAbiertos().map((c) => [c.id, `${c.number}${c.eta ? ` · llega ${c.eta}` : ''}`])]), '__')}
+        ${selectField('wtLCategoria', 'Categoría', opciones([['', 'Sin categoría'], ...categorias.filter((c) => c.activa).map((c) => [c.id, c.nombre])]), '__')}
+        ${field('wtLCupo', 'Cupo de cada variante', '', 'number', 'min="0" step="1" placeholder="No cambiar"')}
+        ${field('wtLPrecio', 'Ajustar precio (%)', '', 'number', 'step="0.5" min="-89" max="500" placeholder="Ej.: 10 sube, −5 baja"')}
+        ${selectField('wtLActivo', 'En la tienda', [['__', '— No cambiar —'], ['1', 'Publicar'], ['0', 'Ocultar']], '__')}
+      </div>
+      <p class="fx-muted" id="wtLResumen" style="margin:10px 0 0"></p>`,
+      `<button class="btn btn-secondary" id="modalCancel">Cancelar</button><button class="btn btn-primary" id="wtLAplicar">Aplicar a ${n}</button>`);
+    $('modalCancel').onclick = closeModal;
+    const leer = () => {
+      const c = {};
+      if ($('wtLContenedor').value !== '__') c.contenedorId = $('wtLContenedor').value;
+      if ($('wtLCategoria').value !== '__') c.categoriaId = $('wtLCategoria').value;
+      if ($('wtLCupo').value !== '') c.cupo = Number($('wtLCupo').value);
+      if ($('wtLPrecio').value !== '' && Number($('wtLPrecio').value) !== 0) c.precioPct = Number($('wtLPrecio').value);
+      if ($('wtLActivo').value !== '__') c.activo = $('wtLActivo').value === '1';
+      return c;
+    };
+    const resumir = () => {
+      const c = leer();
+      const sel = productos.filter((p) => seleccion.has(p.id));
+      const partes = [];
+      if ('contenedorId' in c) partes.push(c.contenedorId ? `contenedor ${contenedoresAbiertos().find((k) => k.id === c.contenedorId)?.number}` : 'sin contenedor');
+      if ('categoriaId' in c) partes.push(c.categoriaId ? `categoría ${categorias.find((k) => k.id === c.categoriaId)?.nombre}` : 'sin categoría');
+      if ('cupo' in c) partes.push(`cupo ${c.cupo} en cada variante`);
+      if ('precioPct' in c && sel.length) { const ej = sel[0]; partes.push(`precio ${c.precioPct > 0 ? '+' : ''}${c.precioPct} % (ej.: ${esc(ej.nombre)} ${usd(ej.precioUsd)} → ${usd(Math.round(ej.precioUsd * (1 + c.precioPct / 100) * 100) / 100)})`); }
+      if ('activo' in c) partes.push(c.activo ? 'publicar' : 'ocultar');
+      $('wtLResumen').innerHTML = partes.length ? `Se aplicará: ${partes.join(' · ')}.` : 'Elige al menos un cambio.';
+    };
+    ['wtLContenedor', 'wtLCategoria', 'wtLCupo', 'wtLPrecio', 'wtLActivo'].forEach((id) => { $(id).oninput = $(id).onchange = resumir; });
+    resumir();
+    $('wtLAplicar').onclick = async () => {
+      const c = leer();
+      if (!Object.keys(c).length) return toast('Elige al menos un cambio');
+      if ('cupo' in c && !(Number.isInteger(c.cupo) && c.cupo >= 0)) return toast('El cupo debe ser un número entero, 0 o mayor');
+      $('wtLAplicar').disabled = true;
+      const ok = await aplicarLote(c, 'actualizados');
+      if (ok) closeModal(); else if ($('wtLAplicar')) $('wtLAplicar').disabled = false;
+    };
   }
 
   function productoModal(p = null) {
@@ -320,6 +438,7 @@
     estado.busqueda = estado.busqueda || estado.apify;
     estado.api = estado.api || estado.apify;
     estadoImportador = estado;
+    importados = [];
     openModal('Importar producto desde 1688', `
       <p class="fx-muted" style="margin:0 0 10px">Arma un <b>borrador sin publicar</b> con el nombre y la descripción traducidos y un precio sugerido. Tú lo revisas, pones el cupo y el contenedor, y lo publicas.</p>
       ${estado.ia ? '' : '<p class="fx-bad">La IA no está configurada en el servidor (IA_PROVEEDOR e IA_API_KEY): el importador no puede leer productos.</p>'}
@@ -414,6 +533,7 @@
           ['wtImpUrl', 'wtImpTexto'].forEach((id) => { $(id).value = ''; });
           $('wtImpCapturas').value = '';
           $('wtImpResultado').innerHTML = `<p class="aviso-ok" style="color:var(--green)">✔ «${esc(nombre)}» quedó como borrador. Sube el siguiente.</p>`;
+          if (importados.length > 1) ofrecerEdicionImportados($('wtImpResultado'));
           $('wtImpUrl').focus();
           return;
         }
@@ -441,7 +561,30 @@
     if (d.imagenes.length) {
       try { const f = await api(`/api/tienda/admin/productos/${encodeURIComponent(r.id)}/imagenes-remotas`, { method: 'POST', body: JSON.stringify({ urls: d.imagenes }) }); fotosTexto = ` con ${f.guardadas} de ${f.pedidas} foto(s)`; } catch (_) { fotosTexto = ' (las fotos no se pudieron traer)'; }
     }
+    importados.push(r.id);
     return { ...r, fotosTexto };
+  }
+
+  /** Borradores creados desde que se abrió el importador: al terminar se editan todos juntos. */
+  let importados = [];
+
+  /** Botón «Editar los N importados en lote»: cierra el importador, los deja marcados en la lista y abre la edición. */
+  function ofrecerEdicionImportados(caja) {
+    if (!importados.length || !caja) return;
+    const ids = [...importados];
+    const p = document.createElement('div');
+    p.className = 'row';
+    p.style.marginTop = '10px';
+    p.innerHTML = `<button class="btn btn-primary btn-sm" type="button">Asignar contenedor, cupo y publicar los ${ids.length} importado(s)</button>`;
+    caja.appendChild(p);
+    p.querySelector('button').onclick = async () => {
+      closeModal();
+      seleccion.clear();
+      ids.forEach((id) => seleccion.add(id));
+      filtroProd = ''; filtroCat = ''; filtroEstado = '';
+      await mostrarProductos();
+      if (seleccion.size) loteEdicionModal();
+    };
   }
 
   let estadoImportador = {};
@@ -487,6 +630,7 @@
           ${x.proveedor ? `<small class="fx-muted">${esc(x.proveedor)}</small>` : ''}
           <a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">Ver en 1688</a></label>`).join('')}</div>
         <div class="row" style="margin-top:10px;align-items:center">
+          <button class="btn btn-secondary btn-sm" id="wtBusTodos" type="button">Seleccionar todos</button>
           ${pagina > 1 ? '<button class="btn btn-secondary btn-sm" id="wtBusAnterior" type="button">‹ Anterior</button>' : ''}
           <button class="btn btn-secondary btn-sm" id="wtBusSiguiente" type="button">Más resultados ›</button>
           <button class="btn btn-primary btn-sm" id="wtBusImportar" type="button" disabled>Importar seleccionados</button>
@@ -494,7 +638,23 @@
         : '<p class="fx-muted">Sin resultados. Prueba con otra palabra (en chino suele encontrar más).</p>';
       if (!r.resultados.length) return;
       const marcados = () => [...caja.querySelectorAll('[data-bus]:checked')].map((c) => r.resultados[+c.dataset.bus]);
-      caja.querySelectorAll('[data-bus]').forEach((c) => (c.onchange = () => { const n = marcados().length; $('wtBusImportar').disabled = !n; $('wtBusImportar').textContent = n ? `Importar ${n} seleccionado(s)` : 'Importar seleccionados'; }));
+      const casillas = [...caja.querySelectorAll('[data-bus]')];
+      const contar = () => {
+        const n = marcados().length;
+        $('wtBusImportar').disabled = !n;
+        $('wtBusImportar').textContent = n ? `Importar ${n} seleccionado(s)` : 'Importar seleccionados';
+        $('wtBusTodos').textContent = n === casillas.length ? 'Quitar todos' : 'Seleccionar todos';
+      };
+      let ultimo = null;
+      casillas.forEach((c, i) => {
+        // Mayús + clic marca todo el tramo desde la última casilla tocada.
+        c.onclick = (e) => {
+          if (e.shiftKey && ultimo != null) casillas.slice(Math.min(ultimo, i), Math.max(ultimo, i) + 1).forEach((x) => { x.checked = c.checked; });
+          ultimo = i;
+          contar();
+        };
+      });
+      $('wtBusTodos').onclick = () => { const todos = marcados().length !== casillas.length; casillas.forEach((x) => { x.checked = todos; }); contar(); };
       $('wtBusSiguiente').onclick = () => buscarEn1688(pagina + 1, estado);
       if ($('wtBusAnterior')) $('wtBusAnterior').onclick = () => buscarEn1688(pagina - 1, estado);
       $('wtBusImportar').onclick = async () => {
@@ -538,7 +698,8 @@
           li.innerHTML = `<b>${esc(j.datos.nombre)}</b> · $${j.sugerido.precioUsd}${esc(b.fotosTexto)} <span class="fx-pill pagada">Borrador</span>`;
         } catch (e) { li.innerHTML = `${esc(f.url)} <span class="fx-bad">${esc(e.message)}</span>`; }
       }
-      $('wtImpProgreso').textContent = `Listo: ${ok} de ${urls.length} borrador(es). ${fichas.length < urls.length ? `Apify no devolvió ${urls.length - fichas.length} enlace(s). ` : ''}Revísalos en la lista de productos, pon el cupo y publícalos.`;
+      $('wtImpProgreso').textContent = `Listo: ${ok} de ${urls.length} borrador(es). ${fichas.length < urls.length ? `Apify no devolvió ${urls.length - fichas.length} enlace(s). ` : ''}${ok ? 'Asígnales contenedor y cupo y publícalos de una vez:' : ''}`;
+      ofrecerEdicionImportados($('wtImpProgreso').parentElement);
       return;
     }
     for (const [i, url] of urls.entries()) {
@@ -559,7 +720,8 @@
         li.innerHTML = `<b>${esc(j.datos.nombre)}</b> · $${j.sugerido.precioUsd}${esc(b.fotosTexto)} <span class="fx-pill pagada">Borrador</span>`;
       } catch (e) { li.innerHTML = `${esc(url)} <span class="fx-bad">${esc(e.message)}</span>`; }
     }
-    $('wtImpProgreso').textContent = `Listo: ${ok} de ${urls.length} borrador(es). Revísalos en la lista de productos, pon el cupo y publícalos.`;
+    $('wtImpProgreso').textContent = `Listo: ${ok} de ${urls.length} borrador(es).${ok ? ' Asígnales contenedor y cupo y publícalos de una vez:' : ''}`;
+    ofrecerEdicionImportados($('wtImpProgreso').parentElement);
   }
 
   function categoriasModal() {
