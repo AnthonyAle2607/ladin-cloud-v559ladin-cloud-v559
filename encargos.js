@@ -20,6 +20,8 @@ const MAX_FOTOS = 3;
 const subir = multer({ storage: multer.memoryStorage(), limits: { files: MAX_FOTOS, fileSize: 4 * 1024 * 1024, fields: 20 } });
 
 const texto = (v, max) => String(v ?? '').trim().slice(0, max);
+/** «ENC-0005»: número de la solicitud, el mismo en la web del cliente y en el panel. */
+const codigoEncargo = (id) => `ENC-${String(id).padStart(4, '0')}`;
 
 function tipoImagen(buf) {
   if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return { mime: 'image/jpeg', ext: '.jpg' };
@@ -86,7 +88,8 @@ function registrar(app, { db, auth, intId }) {
           guardadas++;
         } catch (e) { console.error('Foto de encargo no guardada:', e.message); }
       }
-      res.status(201).json({ ok: true, fotos: guardadas });
+      // Código que ve el cliente en su «Orden de encargo» y el equipo en el panel.
+      res.status(201).json({ ok: true, fotos: guardadas, codigo: codigoEncargo(id) });
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: 'No se pudo enviar tu encargo' });
@@ -117,4 +120,4 @@ async function fotosDe(db, ids) {
   } catch { return []; }
 }
 
-module.exports = { ensureSchema, registrar, fotosDe, enlacesDe };
+module.exports = { ensureSchema, registrar, fotosDe, enlacesDe, codigoEncargo };

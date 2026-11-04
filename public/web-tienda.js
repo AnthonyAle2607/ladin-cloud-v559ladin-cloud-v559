@@ -878,7 +878,7 @@
         const en = s.encargo;
         const link = wa(s.telefono, en ? `Hola ${s.nombre}, te escribimos de Criollo Cargo por tu encargo «Pídelo de China».` : `Hola ${s.nombre}, te escribimos de Criollo Cargo por tu solicitud en la web.`);
         return `<article class="fx-box wt-sol ${s.atendida ? 'is-done' : ''}">
-          <div class="row" style="justify-content:space-between;align-items:baseline"><b>${esc(s.nombre)}</b><span class="fx-pill ${s.tipo === 'reserva' || en ? 'generada' : 'pendiente'}">${esc(TIPO_SOLICITUD[s.tipo] || s.tipo)}</span></div>
+          <div class="row" style="justify-content:space-between;align-items:baseline"><b>${esc(s.nombre)}</b><span class="fx-pill ${s.tipo === 'reserva' || en ? 'generada' : 'pendiente'}">${esc(TIPO_SOLICITUD[s.tipo] || s.tipo)}${en ? ` · ENC-${String(s.id).replace(/\D/g, '').padStart(4, '0')}` : ''}</span></div>
           <small class="fx-muted">${esc(cuando(s.creadoEn))}${s.estado ? ` · ${esc(s.estado)}` : ''}</small>
           <p style="margin:8px 0">${[s.telefono, s.email].filter(Boolean).map(esc).join(' · ')}</p>
           ${c ? `<p style="margin:0 0 8px"><b>${esc(String(c.cbm).replace('.', ','))} m³</b> · ${esc(c.modalidad === 'retiro' ? 'Retiro en Valencia' : `Puerta a puerta${c.estado ? ` a ${c.estado}` : ''}`)} · estimado <b>${usd(c.totalUsd)}</b></p>` : ''}
