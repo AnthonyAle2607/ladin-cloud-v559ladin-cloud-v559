@@ -94,11 +94,12 @@
   const seleccion = new Set();
   let ultimoMarcado = null; // para marcar un rango con Mayús + clic
 
-  const cupoDe = (p) => p.variantes.filter((v) => v.activa).reduce((s, v) => s + v.cupo, 0);
+  /** Unidades a la venta: Infinity si alguna variante activa no tiene límite (cupo null). */
+  const cupoDe = (p) => p.variantes.filter((v) => v.activa).reduce((s, v) => s + (v.cupo == null ? Infinity : v.cupo), 0);
   const ESTADOS_LISTA = {
     borradores: ['Borradores (ocultos)', (p) => !p.activo],
     publicados: ['Publicados', (p) => p.activo],
-    sinCupo: ['Sin cupo', (p) => cupoDe(p) === 0],
+    sinCupo: ['Agotados (cupo en 0)', (p) => cupoDe(p) === 0],
     sinContenedor: ['Sin contenedor', (p) => !p.contenedorId],
     sinFotos: ['Sin fotos', (p) => !p.imagenes.length],
   };
@@ -110,13 +111,13 @@
     catch (e) { if (sigueEn('webProductos')) page().innerHTML = fallo('Productos de la tienda', e); return; }
     if (!sigueEn('webProductos')) return;
     const publicados = productos.filter((p) => p.activo);
-    const sinCupo = publicados.filter((p) => !p.variantes.some((v) => v.activa && v.cupo > 0));
+    const sinCupo = publicados.filter((p) => cupoDe(p) === 0);
     page().innerHTML = `
-      <div class="page-head"><div><h1>Productos de la tienda</h1><p>Preventa de la web: cada producto viaja en un contenedor y tiene un cupo por variante.</p></div>
+      <div class="page-head"><div><h1>Productos de la tienda</h1><p>Preventa de la web: cada producto viaja en un contenedor. El cupo es opcional: sin cupo se vende sin límite.</p></div>
         <div class="row"><button class="btn btn-secondary" id="wtCategorias">Categorías</button><button class="btn btn-secondary" id="wtDestinos">Destinos</button><button class="btn btn-secondary" id="wtLote">Carga masiva (Excel)</button><button class="btn btn-secondary" id="wtImportar">Importar desde 1688</button><button class="btn btn-primary" id="wtNuevo">Nuevo producto</button></div></div>
       <div class="fx-kpis">
         <div class="fx-kpi"><span>Publicados</span><b>${publicados.length}</b><small>de ${productos.length} producto(s)</small></div>
-        <div class="fx-kpi"><span>Agotados</span><b>${sinCupo.length}</b><small>publicados sin cupo</small></div>
+        <div class="fx-kpi"><span>Agotados</span><b>${sinCupo.length}</b><small>publicados con el cupo en 0</small></div>
         <div class="fx-kpi"><span>Categorías</span><b>${categorias.filter((c) => c.activa).length}</b></div>
       </div>
       <div class="fx-toolbar">
@@ -171,7 +172,7 @@
             <td><b>${esc(p.nombre)}</b><br><small class="fx-muted">/${esc(p.slug)} · ${p.variantes.filter((v) => v.activa).length} variante(s) · ${p.imagenes.length} foto(s)</small></td>
             <td>${esc(cat(p.categoriaId))}</td><td>${p.contenedor ? `<span class="code-pill">${esc(p.contenedor)}</span>` : '<span class="fx-warn">Sin contenedor</span>'}</td>
             <td class="fx-num">${usd(p.precioUsd)}${p.precioAntesUsd ? `<br><small class="fx-muted"><s>${usd(p.precioAntesUsd)}</s></small>` : ''}</td>
-            <td class="fx-num">${cupo || '<span class="fx-bad">0</span>'}</td>
+            <td class="fx-num">${cupo === Infinity ? '<span class="fx-muted">Sin límite</span>' : cupo || '<span class="fx-bad">0 · agotado</span>'}</td>
             <td>${p.activo ? '<span class="fx-pill pagada">Publicado</span>' : '<span class="fx-pill anulada">Oculto</span>'}</td>
             <td><div class="fx-table-actions"><button class="btn btn-secondary btn-sm" data-wt-editar="${esc(p.id)}">Editar</button></div></td></tr>`;
         }).join('')
@@ -196,13 +197,13 @@
     if (cambios.activo === true) {
       // Se mira cómo quedará cada producto con los cambios de esta misma edición, no cómo está ahora.
       const contenedor = (p) => ('contenedorId' in cambios ? cambios.contenedorId : p.contenedorId);
-      const cupo = (p) => ('cupo' in cambios ? cambios.cupo * p.variantes.filter((v) => v.activa).length : cupoDe(p));
+      const cupo = (p) => ('cupo' in cambios ? (cambios.cupo == null ? Infinity : cambios.cupo * p.variantes.filter((v) => v.activa).length) : cupoDe(p));
       const sin = productos.filter((p) => seleccion.has(p.id) && (!contenedor(p) || cupo(p) === 0)).length;
-      if (sin && !confirm(`${sin} de ${ids.length} no tienen contenedor o cupo: saldrán sin fecha de llegada o agotados. ¿Publicar igual?`)) return false;
+      if (sin && !confirm(`${sin} de ${ids.length} no tienen contenedor o tienen el cupo en 0: saldrán sin fecha de llegada o agotados. ¿Publicar igual?`)) return false;
     }
     try {
       const r = await api('/api/tienda/admin/productos/lote', { method: 'PUT', body: JSON.stringify({ ids, cambios }) });
-      const avisos = [r.publicadosSinContenedor && `${r.publicadosSinContenedor} publicado(s) sin contenedor`, r.publicadosSinCupo && `${r.publicadosSinCupo} publicado(s) sin cupo`].filter(Boolean);
+      const avisos = [r.publicadosSinContenedor && `${r.publicadosSinContenedor} publicado(s) sin contenedor`, r.publicadosSinCupo && `${r.publicadosSinCupo} publicado(s) agotado(s) (cupo en 0)`].filter(Boolean);
       toast(`${r.actualizados} producto(s) ${texto}.${avisos.length ? ` Ojo: ${avisos.join(' y ')}.` : ''}`);
       await mostrarProductos();
       return true;
@@ -217,7 +218,8 @@
       <div class="fx-grid">
         ${selectField('wtLContenedor', 'Viaja en el contenedor', opciones([['', 'Sin contenedor'], ...contenedoresAbiertos().map((c) => [c.id, `${c.number}${c.eta ? ` · llega ${c.eta}` : ''}`])]), '__')}
         ${selectField('wtLCategoria', 'Categoría', opciones([['', 'Sin categoría'], ...categorias.filter((c) => c.activa).map((c) => [c.id, c.nombre])]), '__')}
-        ${field('wtLCupo', 'Cupo de cada variante', '', 'number', 'min="0" step="1" placeholder="No cambiar"')}
+        ${selectField('wtLCupoModo', 'Cupo de cada variante', [['__', '— No cambiar —'], ['libre', 'Sin límite (siempre a la venta)'], ['fijo', 'Cantidad fija…']], '__')}
+        ${field('wtLCupo', 'Unidades por variante', '', 'number', 'min="0" step="1" placeholder="Ej.: 50" disabled')}
         ${field('wtLPrecio', 'Ajustar precio (%)', '', 'number', 'step="0.5" min="-89" max="500" placeholder="Ej.: 10 sube, −5 baja"')}
         ${selectField('wtLActivo', 'En la tienda', [['__', '— No cambiar —'], ['1', 'Publicar'], ['0', 'Ocultar']], '__')}
       </div>
@@ -228,7 +230,8 @@
       const c = {};
       if ($('wtLContenedor').value !== '__') c.contenedorId = $('wtLContenedor').value;
       if ($('wtLCategoria').value !== '__') c.categoriaId = $('wtLCategoria').value;
-      if ($('wtLCupo').value !== '') c.cupo = Number($('wtLCupo').value);
+      if ($('wtLCupoModo').value === 'libre') c.cupo = null;
+      if ($('wtLCupoModo').value === 'fijo' && $('wtLCupo').value !== '') c.cupo = Number($('wtLCupo').value);
       if ($('wtLPrecio').value !== '' && Number($('wtLPrecio').value) !== 0) c.precioPct = Number($('wtLPrecio').value);
       if ($('wtLActivo').value !== '__') c.activo = $('wtLActivo').value === '1';
       return c;
@@ -239,17 +242,18 @@
       const partes = [];
       if ('contenedorId' in c) partes.push(c.contenedorId ? `contenedor ${contenedoresAbiertos().find((k) => k.id === c.contenedorId)?.number}` : 'sin contenedor');
       if ('categoriaId' in c) partes.push(c.categoriaId ? `categoría ${categorias.find((k) => k.id === c.categoriaId)?.nombre}` : 'sin categoría');
-      if ('cupo' in c) partes.push(`cupo ${c.cupo} en cada variante`);
+      if ('cupo' in c) partes.push(c.cupo == null ? 'cupo sin límite' : `cupo ${c.cupo} en cada variante`);
       if ('precioPct' in c && sel.length) { const ej = sel[0]; partes.push(`precio ${c.precioPct > 0 ? '+' : ''}${c.precioPct} % (ej.: ${esc(ej.nombre)} ${usd(ej.precioUsd)} → ${usd(Math.round(ej.precioUsd * (1 + c.precioPct / 100) * 100) / 100)})`); }
       if ('activo' in c) partes.push(c.activo ? 'publicar' : 'ocultar');
       $('wtLResumen').innerHTML = partes.length ? `Se aplicará: ${partes.join(' · ')}.` : 'Elige al menos un cambio.';
     };
-    ['wtLContenedor', 'wtLCategoria', 'wtLCupo', 'wtLPrecio', 'wtLActivo'].forEach((id) => { $(id).oninput = $(id).onchange = resumir; });
+    ['wtLContenedor', 'wtLCategoria', 'wtLCupoModo', 'wtLCupo', 'wtLPrecio', 'wtLActivo'].forEach((id) => { $(id).oninput = $(id).onchange = () => { $('wtLCupo').disabled = $('wtLCupoModo').value !== 'fijo'; resumir(); }; });
     resumir();
     $('wtLAplicar').onclick = async () => {
       const c = leer();
       if (!Object.keys(c).length) return toast('Elige al menos un cambio');
-      if ('cupo' in c && !(Number.isInteger(c.cupo) && c.cupo >= 0)) return toast('El cupo debe ser un número entero, 0 o mayor');
+      if ($('wtLCupoModo').value === 'fijo' && !('cupo' in c)) return toast('Escribe las unidades por variante');
+      if ('cupo' in c && c.cupo != null && !(Number.isInteger(c.cupo) && c.cupo >= 0)) return toast('El cupo debe ser un número entero, 0 o mayor');
       $('wtLAplicar').disabled = true;
       const ok = await aplicarLote(c, 'actualizados');
       if (ok) closeModal(); else if ($('wtLAplicar')) $('wtLAplicar').disabled = false;
@@ -279,7 +283,7 @@
         <div class="field"><label for="wtSpecs">Especificaciones (una por línea)</label><textarea id="wtSpecs" rows="4" maxlength="4000">${esc((p?.especificaciones || []).join('\n'))}</textarea></div>
       </div>
       <div class="fx-box" style="margin-top:12px"><h3>Variantes y cupo</h3>
-        <p class="fx-muted" style="margin:0 0 8px">El cupo son las unidades que caben en este contenedor. Cada pedido lo descuenta al reservar y lo devuelve si se cancela o vence. Si el producto no tiene variantes, deja una sola (por ejemplo «Única»).</p>
+        <p class="fx-muted" style="margin:0 0 8px">Cupo <b>opcional</b>: vacío = <b>sin límite</b>, siempre se puede comprar. Con un número, cada pedido lo descuenta al reservar (y lo devuelve si se cancela o vence) y al llegar a 0 se agota. Si el producto no tiene variantes, deja una sola (por ejemplo «Única»).</p>
         <div class="fx-scroll"><table class="fx-lines"><thead><tr><th>Variante</th><th>SKU</th><th>Cupo</th><th>Precio propio</th><th></th></tr></thead><tbody id="wtVariantes"></tbody></table></div>
         <div class="row" style="margin-top:8px"><button class="btn btn-secondary btn-sm" id="wtVarMas" type="button">+ Variante</button></div>
       </div>
@@ -292,7 +296,7 @@
       $('wtVariantes').innerHTML = variantes.map((v, i) => `<tr>
         <td><input class="fx-desc" data-v="${i}" data-k="nombre" maxlength="80" value="${esc(v.nombre ?? '')}" placeholder="Negro" aria-label="Nombre de la variante"></td>
         <td><input data-v="${i}" data-k="sku" maxlength="60" value="${esc(v.sku ?? '')}" aria-label="SKU"></td>
-        <td><input data-v="${i}" data-k="cupo" type="number" min="0" step="1" value="${esc(v.cupo ?? '')}" aria-label="Cupo"></td>
+        <td><input data-v="${i}" data-k="cupo" type="number" min="0" step="1" value="${esc(v.cupo ?? '')}" placeholder="Sin límite" aria-label="Cupo (vacío: sin límite)"></td>
         <td><input data-v="${i}" data-k="precioUsd" type="number" min="0" step="0.01" value="${esc(v.precioUsd ?? '')}" placeholder="igual" aria-label="Precio propio"></td>
         <td><button class="btn btn-secondary btn-sm" data-quitar-v="${i}" type="button" aria-label="Quitar variante" ${variantes.length < 2 ? 'disabled' : ''}>×</button></td></tr>`).join('');
       document.querySelectorAll('#wtVariantes [data-v]').forEach((el) => (el.oninput = () => { variantes[+el.dataset.v][el.dataset.k] = el.value; }));
@@ -307,7 +311,7 @@
         nombre: $('wtNombre').value.trim(), slug: $('wtSlug').value.trim(), categoriaId: $('wtCategoria').value, origen: $('wtOrigen').value.trim(),
         contenedorId: $('wtContenedor').value, precioUsd: $('wtPrecio').value, precioAntesUsd: $('wtAntes').value, nombreVariante: $('wtNombreVariante').value.trim(),
         orden: $('wtOrden').value, descripcion: $('wtDesc').value, especificaciones: $('wtSpecs').value, activo: $('wtActivo').checked,
-        variantes: variantes.map((v) => ({ id: v.id, nombre: String(v.nombre || '').trim(), sku: String(v.sku || '').trim(), cupo: v.cupo === '' ? NaN : Number(v.cupo), precioUsd: v.precioUsd === '' ? null : v.precioUsd })),
+        variantes: variantes.map((v) => ({ id: v.id, nombre: String(v.nombre || '').trim(), sku: String(v.sku || '').trim(), cupo: v.cupo === '' || v.cupo == null ? null : Number(v.cupo), precioUsd: v.precioUsd === '' ? null : v.precioUsd })),
       };
       if (cuerpo.activo && !cuerpo.contenedorId && !confirm('El producto no tiene contenedor: la web no podrá mostrar su fecha de llegada. ¿Publicarlo igual?')) return;
       try {
@@ -388,7 +392,7 @@
 
   function mostrarLote({ filas, resumen, columnas, porTanda }) {
     const validas = filas.filter((f) => !f.errores.length);
-    const cupo = (f) => f.datos.variantes.reduce((s, v) => s + (Number(v.cupo) || 0), 0);
+    const cupo = (f) => (f.datos.variantes.some((v) => v.cupo == null) ? 'Sin límite' : f.datos.variantes.reduce((s, v) => s + (Number(v.cupo) || 0), 0));
     $('wtLoteResultado').innerHTML = `<div class="fx-box" style="margin-top:12px">
       <h3>${resumen.total} fila(s): ${resumen.validas} lista(s) — ${resumen.crear} nueva(s) y ${resumen.actualizar} a actualizar${resumen.total - resumen.validas ? ` · <span class="fx-bad">${resumen.total - resumen.validas} con errores</span>` : ''}</h3>
       <p class="fx-muted" style="margin:0 0 8px">Columnas reconocidas: ${columnas.map(esc).join(', ')}.</p>
@@ -440,7 +444,7 @@
     estadoImportador = estado;
     importados = [];
     openModal('Importar producto desde 1688', `
-      <p class="fx-muted" style="margin:0 0 10px">Arma un <b>borrador sin publicar</b> con el nombre y la descripción traducidos y un precio sugerido. Tú lo revisas, pones el cupo y el contenedor, y lo publicas.</p>
+      <p class="fx-muted" style="margin:0 0 10px">Arma un <b>borrador sin publicar</b> con el nombre y la descripción traducidos y un precio sugerido. Tú lo revisas, eliges el contenedor (y un cupo si quieres limitarlo) y lo publicas.</p>
       ${estado.ia ? '' : '<p class="fx-bad">La IA no está configurada en el servidor (IA_PROVEEDOR e IA_API_KEY): el importador no puede leer productos.</p>'}
       <div class="fx-box" style="margin:0 0 12px"><h3>Buscar en 1688</h3>
         ${estado.busqueda ? `<form id="wtBusForm" class="row" style="gap:8px;align-items:flex-end"><div class="field" style="flex:1;margin:0"><label for="wtBusQ">Qué buscas (español, inglés o chino)</label><input id="wtBusQ" maxlength="120" placeholder="freidora de aire · air fryer · 空气炸锅" autocomplete="off"></div><button class="btn btn-secondary" id="wtBusBoton" type="submit">Buscar</button></form>
@@ -546,13 +550,13 @@
     $('wtImpSeguir').onclick = () => crear(true);
   }
 
-  /** Crea el borrador (sin publicar, cupo 0) de un producto leído por el importador y trae sus fotos. */
+  /** Crea el borrador (sin publicar, cupo sin límite) de un producto leído por el importador y trae sus fotos. */
   async function crearBorradorImportado(d, sugerido, urlPegada, cambios = {}) {
     const r = await api('/api/tienda/admin/productos', { method: 'POST', body: JSON.stringify({
       nombre: d.nombre, categoriaId: '', contenedorId: '', origen: d.origen || '',
       precioUsd: sugerido?.precioUsd, nombreVariante: d.nombreVariante || 'Presentación', descripcion: d.descripcion, especificaciones: d.especificaciones, activo: false,
-      // El cupo lo decide el equipo: el borrador nace en 0 y sin publicar.
-      variantes: d.variantes.length ? d.variantes.map((v) => ({ nombre: v.nombre, cupo: 0, precioUsd: v.precioSugeridoUsd || null })) : [{ nombre: 'Única', cupo: 0 }],
+      // Nace sin publicar y con cupo sin límite: al publicarlo ya se puede comprar. El equipo pone cupo si quiere limitarlo.
+      variantes: d.variantes.length ? d.variantes.map((v) => ({ nombre: v.nombre, cupo: null, precioUsd: v.precioSugeridoUsd || null })) : [{ nombre: 'Única', cupo: null }],
       fuenteUrl: d.url || urlPegada || '',
       costoReferencia: { proveedor: d.proveedor, moneda: d.moneda, precios: d.precios, paquete: d.paquete, medidasUnidad: d.medidasUnidad, desglose: sugerido?.desglose || null, pedidoMinimo: d.pedidoMinimo, nombreOriginal: d.nombreOriginal },
       ...cambios,
@@ -575,7 +579,7 @@
     const p = document.createElement('div');
     p.className = 'row';
     p.style.marginTop = '10px';
-    p.innerHTML = `<button class="btn btn-primary btn-sm" type="button">Asignar contenedor, cupo y publicar los ${ids.length} importado(s)</button>`;
+    p.innerHTML = `<button class="btn btn-primary btn-sm" type="button">Asignar contenedor y publicar los ${ids.length} importado(s)</button>`;
     caja.appendChild(p);
     p.querySelector('button').onclick = async () => {
       closeModal();
@@ -698,7 +702,7 @@
           li.innerHTML = `<b>${esc(j.datos.nombre)}</b> · $${j.sugerido.precioUsd}${esc(b.fotosTexto)} <span class="fx-pill pagada">Borrador</span>`;
         } catch (e) { li.innerHTML = `${esc(f.url)} <span class="fx-bad">${esc(e.message)}</span>`; }
       }
-      $('wtImpProgreso').textContent = `Listo: ${ok} de ${urls.length} borrador(es). ${fichas.length < urls.length ? `Apify no devolvió ${urls.length - fichas.length} enlace(s). ` : ''}${ok ? 'Asígnales contenedor y cupo y publícalos de una vez:' : ''}`;
+      $('wtImpProgreso').textContent = `Listo: ${ok} de ${urls.length} borrador(es). ${fichas.length < urls.length ? `Apify no devolvió ${urls.length - fichas.length} enlace(s). ` : ''}${ok ? 'Asígnales contenedor y publícalos de una vez:' : ''}`;
       ofrecerEdicionImportados($('wtImpProgreso').parentElement);
       return;
     }
@@ -720,7 +724,7 @@
         li.innerHTML = `<b>${esc(j.datos.nombre)}</b> · $${j.sugerido.precioUsd}${esc(b.fotosTexto)} <span class="fx-pill pagada">Borrador</span>`;
       } catch (e) { li.innerHTML = `${esc(url)} <span class="fx-bad">${esc(e.message)}</span>`; }
     }
-    $('wtImpProgreso').textContent = `Listo: ${ok} de ${urls.length} borrador(es).${ok ? ' Asígnales contenedor y cupo y publícalos de una vez:' : ''}`;
+    $('wtImpProgreso').textContent = `Listo: ${ok} de ${urls.length} borrador(es).${ok ? ' Asígnales contenedor y publícalos de una vez:' : ''}`;
     ofrecerEdicionImportados($('wtImpProgreso').parentElement);
   }
 

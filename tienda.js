@@ -22,6 +22,7 @@ const path = require('path');
 const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const almacen = require('./almacen');
+const { origenLatino } = require('./origen-china');
 
 const fotos = almacen.crearAlmacen({ bucket: process.env.SUPABASE_BUCKET_TIENDA || 'tienda', carpetaDisco: path.join(__dirname, 'uploads', 'tienda') });
 
@@ -52,6 +53,24 @@ const SIGUIENTES = {
 const texto = (v, max) => String(v ?? '').trim().slice(0, max);
 const num = (v) => (v == null || v === '' ? 0 : Number(v));
 const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+/**
+ * Cupo opcional. Sin cupo («sin límite») la variante siempre se puede comprar; con cupo, cada pedido lo descuenta y al
+ * llegar a 0 se agota. En la base «sin límite» se guarda como −1 (la columna es NOT NULL: así no hace falta migración);
+ * hacia el panel y la web viaja como null.
+ */
+const SIN_LIMITE = -1;
+const cupoSalida = (v) => (num(v) < 0 ? null : num(v));
+/** null, '' o «sin límite» → SIN_LIMITE; un entero ≥ 0 → ese número; cualquier otra cosa → undefined (inválido). */
+/** Sin la migración 20261106000000_cupo_sin_limite.sql, la base rechaza «sin límite» (regla cupo >= 0). */
+const faltaMigracionCupo = (e) => e?.code === '23514' && /cupo/.test(`${e.constraint || ''} ${e.message || ''}`);
+const MENSAJE_MIGRACION_CUPO = 'Para vender «sin límite» falta aplicar la migración 20261106000000_cupo_sin_limite.sql en Supabase. Mientras tanto, pon un número de cupo.';
+
+function cupoEntrada(v) {
+  if (v == null || v === '' || /^\s*(sin\s*l[ií]mite|ilimitado|∞)\s*$/i.test(String(v))) return SIN_LIMITE;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 && n <= 1000000 ? n : undefined;
+}
 const hash = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 const fechaISO = (v) => {
   if (!v) return null;
@@ -149,7 +168,7 @@ async function ensureSchema(db) {
 /** Devuelve el cupo de un pedido a sus variantes (al cancelar o vencer). */
 async function devolverCupo(q, pedidoId) {
   const items = (await q.query('SELECT variante_id,cantidad FROM tienda_pedido_items WHERE pedido_id=$1', [pedidoId])).rows;
-  for (const it of items) if (it.variante_id) await q.query('UPDATE tienda_variantes SET cupo = cupo + $1 WHERE id=$2', [num(it.cantidad), it.variante_id]);
+  for (const it of items) if (it.variante_id) await q.query('UPDATE tienda_variantes SET cupo = CASE WHEN cupo < 0 THEN cupo ELSE cupo + $1 END WHERE id=$2', [num(it.cantidad), it.variante_id]);
 }
 
 function registrar(app, { db, auth, intId, logAction }) {
@@ -184,8 +203,8 @@ function registrar(app, { db, auth, intId, logAction }) {
        WHERE ${where} ORDER BY p.orden, p.id`, params)).rows;
     if (!productos.length) return [];
     const ids = productos.map((p) => Number(p.id));
-    // Variantes con cupo, en orden: la primera es la que agrega el botón rápido «Agregar al carrito» de la tarjeta.
-    const variantes = (await db.query('SELECT id, producto_id, nombre, precio_usd FROM tienda_variantes WHERE producto_id = ANY($1::int[]) AND activa = TRUE AND cupo > 0 ORDER BY orden, id', [ids])).rows;
+    // Variantes que se pueden comprar (sin límite o con cupo), en orden: la primera es la que agrega el botón rápido «Agregar al carrito» de la tarjeta.
+    const variantes = (await db.query('SELECT id, producto_id, nombre, precio_usd FROM tienda_variantes WHERE producto_id = ANY($1::int[]) AND activa = TRUE AND cupo <> 0 ORDER BY orden, id', [ids])).rows;
     const imagenes = (await db.query('SELECT id, producto_id FROM tienda_imagenes WHERE producto_id = ANY($1::int[]) ORDER BY orden, id', [ids])).rows;
     const primera = new Map();
     variantes.forEach((v) => { if (!primera.has(Number(v.producto_id))) primera.set(Number(v.producto_id), v); });
@@ -237,12 +256,12 @@ function registrar(app, { db, auth, intId, logAction }) {
       res.setHeader('Cache-Control', 'public, max-age=30');
       res.json({
         ...p,
-        origen: fila.origen || '',
+        origen: origenLatino(fila.origen),
         descripcion: listaJSON(fila.descripcion),
         especificaciones: listaJSON(fila.especificaciones),
         nombreVariante: fila.nombre_variante,
         // Solo «disponible» o no: el cupo exacto es información del negocio.
-        variantes: variantes.map((v) => ({ id: String(v.id), nombre: v.nombre, disponible: num(v.cupo) > 0, precioUsd: v.precio_usd != null ? num(v.precio_usd) : p.precioUsd })),
+        variantes: variantes.map((v) => ({ id: String(v.id), nombre: v.nombre, disponible: num(v.cupo) !== 0, precioUsd: v.precio_usd != null ? num(v.precio_usd) : p.precioUsd })),
         imagenes: imagenes.map((i) => urlImagen(i.id)),
         mismoContenedor: mismo,
       });
@@ -319,7 +338,8 @@ function registrar(app, { db, auth, intId, logAction }) {
            FROM tienda_variantes v JOIN tienda_productos p ON p.id=v.producto_id WHERE v.id=$1 AND v.activa = TRUE AND p.activo = TRUE`, [varianteId])).rows[0];
         if (!v) { await tx.query('ROLLBACK'); return res.status(409).json({ error: 'Un producto del carrito ya no está disponible. Actualiza el carrito.' }); }
         // Reserva atómica: solo descuenta si queda cupo suficiente (dos compras a la vez no pueden pasarse del cupo).
-        const r = await tx.query('UPDATE tienda_variantes SET cupo = cupo - $1 WHERE id=$2 AND cupo >= $1', [cantidad, varianteId]);
+        // Sin límite (−1) no descuenta nada.
+        const r = await tx.query('UPDATE tienda_variantes SET cupo = CASE WHEN cupo < 0 THEN cupo ELSE cupo - $1 END WHERE id=$2 AND (cupo < 0 OR cupo >= $1)', [cantidad, varianteId]);
         if (!r.rowCount) { await tx.query('ROLLBACK'); return res.status(409).json({ error: `No queda cupo suficiente de «${v.nombre} · ${v.variante}» en este contenedor.` }); }
         lineas.push({ ...v, cantidad, precio: num(v.precio_variante ?? v.precio_usd) });
       }
@@ -424,7 +444,7 @@ function registrar(app, { db, auth, intId, logAction }) {
         precioUsd: num(p.precio_usd), precioAntesUsd: p.precio_antes_usd != null ? num(p.precio_antes_usd) : null, nombreVariante: p.nombre_variante,
         contenedorId: p.contenedor_id ? String(p.contenedor_id) : '', contenedor: p.contenedor || '', orden: num(p.orden), activo: !!p.activo,
         fuenteUrl: p.fuente_url || '', costoReferencia: (() => { try { return p.costo_referencia ? JSON.parse(p.costo_referencia) : null; } catch { return null; } })(),
-        variantes: variantes.filter((v) => v.producto_id === p.id).map((v) => ({ id: String(v.id), nombre: v.nombre, sku: v.sku || '', cupo: num(v.cupo), precioUsd: v.precio_usd != null ? num(v.precio_usd) : null, activa: !!v.activa })),
+        variantes: variantes.filter((v) => v.producto_id === p.id).map((v) => ({ id: String(v.id), nombre: v.nombre, sku: v.sku || '', cupo: cupoSalida(v.cupo), precioUsd: v.precio_usd != null ? num(v.precio_usd) : null, activa: !!v.activa })),
         imagenes: imagenes.filter((i) => i.producto_id === p.id).map((i) => ({ id: String(i.id), url: `/api/tienda/admin/imagenes/${i.id}` })),
       })));
     } catch (e) {
@@ -449,11 +469,11 @@ function registrar(app, { db, auth, intId, logAction }) {
     if (!variantes.length) return fallo(400, 'Agrega al menos una variante (aunque sea única)');
     for (const v of variantes) {
       if (!texto(v?.nombre, 80)) return fallo(400, 'Cada variante necesita un nombre');
-      if (!(Number.isInteger(Number(v?.cupo)) && Number(v.cupo) >= 0)) return fallo(400, 'El cupo de cada variante debe ser un número entero');
+      if (cupoEntrada(v?.cupo) === undefined) return fallo(400, 'El cupo de cada variante debe ser un número entero (o vacío: sin límite)');
     }
     const slug = slugDe(b.slug || nombre) || `producto-${Date.now()}`;
     const lista = (v) => JSON.stringify((Array.isArray(v) ? v : String(v || '').split('\n')).map((x) => texto(x, 500)).filter(Boolean).slice(0, 20));
-    const valores = [slug, nombre, intId(b.categoriaId), texto(b.origen, 120) || null, lista(b.descripcion), lista(b.especificaciones), precio, antes, texto(b.nombreVariante, 40) || 'Presentación', intId(b.contenedorId), Math.trunc(num(b.orden)), !!b.activo];
+    const valores = [slug, nombre, intId(b.categoriaId), origenLatino(texto(b.origen, 120)) || null, lista(b.descripcion), lista(b.especificaciones), precio, antes, texto(b.nombreVariante, 40) || 'Presentación', intId(b.contenedorId), Math.trunc(num(b.orden)), !!b.activo];
 
     const nuevo = !id;
     const tx = await db.connect();
@@ -471,7 +491,7 @@ function registrar(app, { db, auth, intId, logAction }) {
       const vistas = new Set();
       for (const [i, v] of variantes.entries()) {
         const vid = intId(v.id);
-        const fila = [texto(v.nombre, 80), texto(v.sku, 60) || null, Math.trunc(Number(v.cupo)), v.precioUsd == null || v.precioUsd === '' ? null : Number(v.precioUsd), i, v.activa !== false];
+        const fila = [texto(v.nombre, 80), texto(v.sku, 60) || null, cupoEntrada(v.cupo), v.precioUsd == null || v.precioUsd === '' ? null : Number(v.precioUsd), i, v.activa !== false];
         if (vid && existentes.includes(vid)) {
           await tx.query('UPDATE tienda_variantes SET nombre=$1,sku=$2,cupo=$3,precio_usd=$4,orden=$5,activa=$6 WHERE id=$7', [...fila, vid]);
           vistas.add(vid);
@@ -513,7 +533,7 @@ function registrar(app, { db, auth, intId, logAction }) {
    * Edición en lote (va antes de «/:id» para que «lote» no se tome como un id). Aplica a varios productos a la vez,
    * en una sola transacción, solo los cambios que vengan:
    *   { ids: [...], cambios: { contenedorId?, categoriaId?, cupo?, precioPct?, activo? } }
-   * `cupo` se pone a cada variante activa; `precioPct` sube o baja el precio (y el de las variantes) en ese porcentaje.
+   * `cupo` se pone a cada variante activa (null: sin límite); `precioPct` sube o baja el precio (y el de las variantes) en ese porcentaje.
    */
   app.put('/api/tienda/admin/productos/lote', auth, async (req, res) => {
     if (!soloAdmin(req, res)) return;
@@ -522,7 +542,7 @@ function registrar(app, { db, auth, intId, logAction }) {
     if (!ids.length) return res.status(400).json({ error: 'Selecciona al menos un producto' });
     const tiene = (k) => Object.prototype.hasOwnProperty.call(c, k) && c[k] !== undefined;
     if (!['contenedorId', 'categoriaId', 'cupo', 'precioPct', 'activo'].some(tiene)) return res.status(400).json({ error: 'No hay cambios que aplicar' });
-    if (tiene('cupo') && !(Number.isInteger(Number(c.cupo)) && Number(c.cupo) >= 0 && Number(c.cupo) <= 1000000)) return res.status(400).json({ error: 'El cupo debe ser un número entero, 0 o mayor' });
+    if (Object.prototype.hasOwnProperty.call(c, 'cupo') && cupoEntrada(c.cupo) === undefined) return res.status(400).json({ error: 'El cupo debe ser un número entero, 0 o mayor (o vacío: sin límite)' });
     const pct = tiene('precioPct') ? Number(c.precioPct) : 0;
     if (tiene('precioPct') && !(Number.isFinite(pct) && pct > -90 && pct <= 500 && pct !== 0)) return res.status(400).json({ error: 'El ajuste de precio debe estar entre −90 % y 500 % (y no ser 0)' });
 
@@ -541,7 +561,7 @@ function registrar(app, { db, auth, intId, logAction }) {
         if (k && !(await tx.query('SELECT id FROM tienda_categorias WHERE id=$1', [k])).rows.length) { await tx.query('ROLLBACK'); return res.status(400).json({ error: 'La categoría no existe' }); }
         await tx.query('UPDATE tienda_productos SET categoria_id=$1, actualizado_en=CURRENT_TIMESTAMP WHERE id = ANY($2::int[])', [k, ids]);
       }
-      if (tiene('cupo')) await tx.query('UPDATE tienda_variantes SET cupo=$1 WHERE activa = TRUE AND producto_id = ANY($2::int[])', [Math.trunc(Number(c.cupo)), ids]);
+      if (Object.prototype.hasOwnProperty.call(c, 'cupo')) await tx.query('UPDATE tienda_variantes SET cupo=$1 WHERE activa = TRUE AND producto_id = ANY($2::int[])', [cupoEntrada(c.cupo), ids]);
       if (pct) {
         const f = 1 + pct / 100;
         for (const p of existentes) {
@@ -558,25 +578,25 @@ function registrar(app, { db, auth, intId, logAction }) {
     } catch (e) {
       await tx.query('ROLLBACK').catch(() => {});
       console.error(e);
-      return res.status(500).json({ error: 'No se pudieron aplicar los cambios' });
+      return faltaMigracionCupo(e) ? res.status(409).json({ error: MENSAJE_MIGRACION_CUPO }) : res.status(500).json({ error: 'No se pudieron aplicar los cambios' });
     } finally {
       tx.release?.();
     }
 
-    // Lo que conviene revisar entre los publicados: sin contenedor (sin fecha de llegada) o sin cupo (salen agotados).
+    // Lo que conviene revisar entre los publicados: sin contenedor (sin fecha de llegada) o con el cupo en 0 (agotados).
     const estado = (await db.query(`SELECT p.id, p.activo, p.contenedor_id,
-        (SELECT COALESCE(SUM(v.cupo),0) FROM tienda_variantes v WHERE v.producto_id=p.id AND v.activa = TRUE) AS cupo
+        (SELECT COUNT(*) FROM tienda_variantes v WHERE v.producto_id=p.id AND v.activa = TRUE AND v.cupo <> 0) AS vendibles
       FROM tienda_productos p WHERE p.id = ANY($1::int[])`, [ids])).rows.filter((p) => p.activo);
-    const partes = [tiene('contenedorId') && 'contenedor', tiene('categoriaId') && 'categoría', tiene('cupo') && `cupo ${c.cupo}`, pct && `precio ${pct > 0 ? '+' : ''}${pct} %`, tiene('activo') && (c.activo ? 'publicados' : 'ocultos')].filter(Boolean);
+    const partes = [tiene('contenedorId') && 'contenedor', tiene('categoriaId') && 'categoría', Object.prototype.hasOwnProperty.call(c, 'cupo') && `cupo ${cupoEntrada(c.cupo) < 0 ? 'sin límite' : c.cupo}`, pct && `precio ${pct > 0 ? '+' : ''}${pct} %`, tiene('activo') && (c.activo ? 'publicados' : 'ocultos')].filter(Boolean);
     await logAction(req.user.id, `Tienda: ${ids.length} producto(s) editados en lote`, 'tienda_productos', null, partes.join(' · '));
-    res.json({ ok: true, actualizados: ids.length, publicadosSinContenedor: estado.filter((p) => !p.contenedor_id).length, publicadosSinCupo: estado.filter((p) => !(num(p.cupo) > 0)).length });
+    res.json({ ok: true, actualizados: ids.length, publicadosSinContenedor: estado.filter((p) => !p.contenedor_id).length, publicadosSinCupo: estado.filter((p) => !(num(p.vendibles) > 0)).length });
   });
 
   app.post('/api/tienda/admin/productos', auth, async (req, res) => {
-    try { if (soloAdmin(req, res)) await guardarProducto(req, res, null); } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo guardar el producto' }); }
+    try { if (soloAdmin(req, res)) await guardarProducto(req, res, null); } catch (e) { console.error(e); if (faltaMigracionCupo(e)) res.status(409).json({ error: MENSAJE_MIGRACION_CUPO }); else res.status(500).json({ error: 'No se pudo guardar el producto' }); }
   });
   app.put('/api/tienda/admin/productos/:id', auth, async (req, res) => {
-    try { if (soloAdmin(req, res)) await guardarProducto(req, res, intId(req.params.id)); } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo guardar el producto' }); }
+    try { if (soloAdmin(req, res)) await guardarProducto(req, res, intId(req.params.id)); } catch (e) { console.error(e); if (faltaMigracionCupo(e)) res.status(409).json({ error: MENSAJE_MIGRACION_CUPO }); else res.status(500).json({ error: 'No se pudo guardar el producto' }); }
   });
 
   /**

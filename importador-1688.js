@@ -18,6 +18,7 @@
 const multer = require('multer');
 const ia = require('./packing-ia');
 const tarifas = require('./tarifas');
+const { origenLatino } = require('./origen-china');
 
 const MAX_CAPTURAS = 4;
 const MAX_TEXTO = 40000;
@@ -34,7 +35,7 @@ const INSTRUCCIONES = `Eres comprador de una empresa que importa de China a Vene
   "nombre": "nombre comercial corto en español, sin marcas que no aparezcan (máx. 60 caracteres)",
   "nombreOriginal": "título tal como aparece",
   "proveedor": "nombre de la tienda o fábrica",
-  "origen": "ciudad, China (p. ej. 'Yiwu, China'); null si no aparece",
+  "origen": "ciudad del proveedor en letras latinas (pinyin), nunca en caracteres chinos: 'Guangzhou, China' (广州), 'Yiwu, China' (义乌); null si no aparece",
   "url": "enlace del producto si aparece",
   "moneda": "CNY o USD, según la moneda en que se muestran los precios",
   "precios": [{ "desdeUnidades": 2, "precio": 12.5 }],
@@ -100,7 +101,8 @@ function normalizar(b) {
     nombre: txt(b?.nombre, 150),
     nombreOriginal: txt(b?.nombreOriginal, 300),
     proveedor: txt(b?.proveedor, 150),
-    origen: txt(b?.origen, 120),
+    // Aunque la IA lo deje en chino («广州市»), a la tienda llega en letras latinas («Guangzhou, China»).
+    origen: origenLatino(txt(b?.origen, 120)),
     url: /^https?:\/\//.test(txt(b?.url, 600)) ? txt(b?.url, 600) : '',
     moneda,
     precios,

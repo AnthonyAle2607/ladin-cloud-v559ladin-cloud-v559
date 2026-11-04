@@ -177,6 +177,24 @@ revisa, pone cupo y contenedor, y publica.
   varios enlaces (uno por línea) y cada uno queda como borrador. Si falta la migración 20261104, el producto se guarda
   igual (sin su enlace de origen) y el panel lo avisa.
 
+## Cupo opcional («sin límite»)
+
+La tienda está para vender: el botón principal de la ficha y de la tarjeta es siempre el de comprar.
+
+- **Sin cupo (vacío) = sin límite:** la variante siempre se puede comprar y los pedidos no descuentan nada. Es lo que
+  traen ahora los productos nuevos, los del importador y las filas del Excel con la celda de cupo vacía (o «sin límite»).
+- **Con cupo:** cada pedido lo descuenta al reservar y lo devuelve si se cancela o vence; en 0 se agota. Solo entonces
+  el botón de comprar queda desactivado («Agotado en este contenedor», con el precio) y debajo aparece el enlace
+  «avísame cuando haya cupo».
+- En la base, «sin límite» se guarda como −1 (la API lo muestra como `null`). Migración
+  `20261106000000_cupo_sin_limite.sql`: permite el −1 y pasa a «sin límite» las variantes en 0 que nunca se vendieron
+  (nacían en 0 sin que nadie las agotara); las que llegaron a 0 vendiendo siguen agotadas. Sin la migración, guardar
+  «sin límite» responde con un mensaje claro que pide aplicarla.
+- Panel: en la ficha, el cupo vacío dice «Sin límite»; en la lista, la columna muestra «Sin límite» o «0 · agotado»;
+  en *Editar en lote*, «Cupo»: No cambiar / Sin límite / Cantidad fija.
+- Probado contra Postgres 17 (20 comprobaciones: pedir 30 sin límite, cancelar, cupo 2 que se agota, lote, Excel) y la
+  migración con un producto nunca vendido y otro agotado vendiendo.
+
 ## Edición en lote de productos
 
 Para no abrir los productos uno por uno (sobre todo los borradores que deja el importador):
