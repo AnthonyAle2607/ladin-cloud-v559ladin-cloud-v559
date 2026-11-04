@@ -177,6 +177,22 @@ revisa, pone cupo y contenedor, y publica.
   varios enlaces (uno por línea) y cada uno queda como borrador. Si falta la migración 20261104, el producto se guarda
   igual (sin su enlace de origen) y el panel lo avisa.
 
+## Edición en lote de productos
+
+Para no abrir los productos uno por uno (sobre todo los borradores que deja el importador):
+
+- **Lista de productos:** casilla por fila, «seleccionar todos los de la lista» y Mayús + clic para un rango. Filtro por
+  estado: borradores, publicados, sin cupo, sin contenedor, sin fotos. Con algo marcado aparece una barra con
+  *Editar en lote*, *Publicar*, *Ocultar* y *Quitar selección*.
+- **Editar en lote:** contenedor, categoría, cupo de cada variante, ajuste de precio en % (también el de las variantes con
+  precio propio; el precio tachado se quita si deja de ser mayor) y publicar u ocultar. Lo que quede en «No cambiar» no
+  se toca. Muestra un resumen con un ejemplo de precio antes de aplicar.
+- **Importador:** «Seleccionar todos» y Mayús + clic en los resultados de la búsqueda; al terminar de importar, un botón
+  deja marcados los borradores recién creados y abre la edición en lote (contenedor, cupo y publicar de una vez).
+- `PUT /api/tienda/admin/productos/lote` `{ ids, cambios }`: una sola transacción (todo o nada; si un id no existe no
+  cambia ninguno), hasta 500 productos, solo administrador. Responde cuántos publicados quedaron sin contenedor o sin cupo.
+- Probado contra Postgres 17 (24 comprobaciones) y en el navegador.
+
 ## «Pídelo de China» (encargos)
 
 Para lo que no está en la tienda. La web (`/encargos`) recibe qué busca el cliente (descripción, hasta 5 enlaces,

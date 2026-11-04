@@ -509,6 +509,69 @@ function registrar(app, { db, auth, intId, logAction }) {
     res.status(r.status).json(r.body);
   }
 
+  /**
+   * Edición en lote (va antes de «/:id» para que «lote» no se tome como un id). Aplica a varios productos a la vez,
+   * en una sola transacción, solo los cambios que vengan:
+   *   { ids: [...], cambios: { contenedorId?, categoriaId?, cupo?, precioPct?, activo? } }
+   * `cupo` se pone a cada variante activa; `precioPct` sube o baja el precio (y el de las variantes) en ese porcentaje.
+   */
+  app.put('/api/tienda/admin/productos/lote', auth, async (req, res) => {
+    if (!soloAdmin(req, res)) return;
+    const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(intId).filter(Boolean))].slice(0, 500);
+    const c = req.body?.cambios || {};
+    if (!ids.length) return res.status(400).json({ error: 'Selecciona al menos un producto' });
+    const tiene = (k) => Object.prototype.hasOwnProperty.call(c, k) && c[k] !== undefined;
+    if (!['contenedorId', 'categoriaId', 'cupo', 'precioPct', 'activo'].some(tiene)) return res.status(400).json({ error: 'No hay cambios que aplicar' });
+    if (tiene('cupo') && !(Number.isInteger(Number(c.cupo)) && Number(c.cupo) >= 0 && Number(c.cupo) <= 1000000)) return res.status(400).json({ error: 'El cupo debe ser un número entero, 0 o mayor' });
+    const pct = tiene('precioPct') ? Number(c.precioPct) : 0;
+    if (tiene('precioPct') && !(Number.isFinite(pct) && pct > -90 && pct <= 500 && pct !== 0)) return res.status(400).json({ error: 'El ajuste de precio debe estar entre −90 % y 500 % (y no ser 0)' });
+
+    const tx = await db.connect();
+    try {
+      await tx.query('BEGIN');
+      const existentes = (await tx.query('SELECT id, precio_usd, precio_antes_usd FROM tienda_productos WHERE id = ANY($1::int[])', [ids])).rows;
+      if (existentes.length !== ids.length) { await tx.query('ROLLBACK'); return res.status(404).json({ error: 'Algún producto ya no existe: recarga la lista' }); }
+      if (tiene('contenedorId')) {
+        const k = intId(c.contenedorId);
+        if (k && !(await tx.query('SELECT id FROM contenedores WHERE id=$1', [k])).rows.length) { await tx.query('ROLLBACK'); return res.status(400).json({ error: 'El contenedor no existe' }); }
+        await tx.query('UPDATE tienda_productos SET contenedor_id=$1, actualizado_en=CURRENT_TIMESTAMP WHERE id = ANY($2::int[])', [k, ids]);
+      }
+      if (tiene('categoriaId')) {
+        const k = intId(c.categoriaId);
+        if (k && !(await tx.query('SELECT id FROM tienda_categorias WHERE id=$1', [k])).rows.length) { await tx.query('ROLLBACK'); return res.status(400).json({ error: 'La categoría no existe' }); }
+        await tx.query('UPDATE tienda_productos SET categoria_id=$1, actualizado_en=CURRENT_TIMESTAMP WHERE id = ANY($2::int[])', [k, ids]);
+      }
+      if (tiene('cupo')) await tx.query('UPDATE tienda_variantes SET cupo=$1 WHERE activa = TRUE AND producto_id = ANY($2::int[])', [Math.trunc(Number(c.cupo)), ids]);
+      if (pct) {
+        const f = 1 + pct / 100;
+        for (const p of existentes) {
+          const nuevo = Math.max(0.01, Math.round(num(p.precio_usd) * f * 100) / 100);
+          // El precio anterior (tachado) solo sigue si aún es mayor que el nuevo.
+          const antes = p.precio_antes_usd != null && num(p.precio_antes_usd) > nuevo ? num(p.precio_antes_usd) : null;
+          await tx.query('UPDATE tienda_productos SET precio_usd=$1, precio_antes_usd=$2, actualizado_en=CURRENT_TIMESTAMP WHERE id=$3', [nuevo, antes, p.id]);
+        }
+        const vars = (await tx.query('SELECT id, precio_usd FROM tienda_variantes WHERE precio_usd IS NOT NULL AND producto_id = ANY($1::int[])', [ids])).rows;
+        for (const v of vars) await tx.query('UPDATE tienda_variantes SET precio_usd=$1 WHERE id=$2', [Math.max(0.01, Math.round(num(v.precio_usd) * f * 100) / 100), v.id]);
+      }
+      if (tiene('activo')) await tx.query('UPDATE tienda_productos SET activo=$1, actualizado_en=CURRENT_TIMESTAMP WHERE id = ANY($2::int[])', [!!c.activo, ids]);
+      await tx.query('COMMIT');
+    } catch (e) {
+      await tx.query('ROLLBACK').catch(() => {});
+      console.error(e);
+      return res.status(500).json({ error: 'No se pudieron aplicar los cambios' });
+    } finally {
+      tx.release?.();
+    }
+
+    // Lo que conviene revisar entre los publicados: sin contenedor (sin fecha de llegada) o sin cupo (salen agotados).
+    const estado = (await db.query(`SELECT p.id, p.activo, p.contenedor_id,
+        (SELECT COALESCE(SUM(v.cupo),0) FROM tienda_variantes v WHERE v.producto_id=p.id AND v.activa = TRUE) AS cupo
+      FROM tienda_productos p WHERE p.id = ANY($1::int[])`, [ids])).rows.filter((p) => p.activo);
+    const partes = [tiene('contenedorId') && 'contenedor', tiene('categoriaId') && 'categoría', tiene('cupo') && `cupo ${c.cupo}`, pct && `precio ${pct > 0 ? '+' : ''}${pct} %`, tiene('activo') && (c.activo ? 'publicados' : 'ocultos')].filter(Boolean);
+    await logAction(req.user.id, `Tienda: ${ids.length} producto(s) editados en lote`, 'tienda_productos', null, partes.join(' · '));
+    res.json({ ok: true, actualizados: ids.length, publicadosSinContenedor: estado.filter((p) => !p.contenedor_id).length, publicadosSinCupo: estado.filter((p) => !(num(p.cupo) > 0)).length });
+  });
+
   app.post('/api/tienda/admin/productos', auth, async (req, res) => {
     try { if (soloAdmin(req, res)) await guardarProducto(req, res, null); } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo guardar el producto' }); }
   });
