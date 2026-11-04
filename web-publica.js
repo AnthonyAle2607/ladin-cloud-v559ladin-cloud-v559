@@ -203,9 +203,14 @@ function registrar(app, { db, auth, intId, logAction }) {
       if (!soloAdmin(req, res)) return;
       const pendientes = req.query.todas !== '1';
       const r = await db.query(`SELECT * FROM web_solicitudes ${pendientes ? 'WHERE atendida = FALSE' : ''} ORDER BY id DESC LIMIT 300`);
+      const fotos = await require('./encargos').fotosDe(db, r.rows.filter((s) => s.tipo === 'encargo').map((s) => Number(s.id)));
+      const leer = (v) => { try { return v ? JSON.parse(v) : null; } catch { return null; } };
       res.json(r.rows.map((s) => ({
         id: String(s.id), tipo: s.tipo, nombre: s.nombre, telefono: s.telefono || '', email: s.email || '', estado: s.estado_venezuela || '',
-        mensaje: s.mensaje || '', cotizacion: s.datos ? JSON.parse(s.datos) : null, productoId: s.producto_id ? String(s.producto_id) : null,
+        mensaje: s.mensaje || '', productoId: s.producto_id ? String(s.producto_id) : null,
+        // «reserva» guarda la cotización; «encargo», los enlaces y la cantidad.
+        cotizacion: s.tipo === 'reserva' ? leer(s.datos) : null,
+        encargo: s.tipo === 'encargo' ? { ...(leer(s.datos) || {}), fotos: fotos.filter((f) => Number(f.solicitud_id) === Number(s.id)).map((f) => ({ id: String(f.id), url: `/api/web/solicitudes/${s.id}/fotos/${f.id}` })) } : null,
         atendida: !!s.atendida, creadoEn: instanteISO(s.creado_en),
       })));
     } catch (e) {

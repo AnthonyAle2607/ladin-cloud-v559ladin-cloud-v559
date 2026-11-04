@@ -19,7 +19,7 @@
   const ESTADO_PEDIDO = { pendiente_pago: ['Pendiente de pago', 'pendiente'], pago_reportado: ['Pago reportado', 'parcial'], pagado: ['Pagado', 'pagada'], en_camino: ['En camino', 'generada'], entregado: ['Entregado', 'pagada'], cancelado: ['Cancelado', 'anulada'], vencido: ['Vencido', 'anulada'] };
   const ACCION = { pago_reportado: 'Marcar pago reportado', pendiente_pago: 'Volver a pendiente', pagado: 'Confirmar pago', en_camino: 'Marcar en camino', entregado: 'Marcar entregado', cancelado: 'Cancelar' };
   const pillPedido = (s) => `<span class="fx-pill ${ESTADO_PEDIDO[s]?.[1] || ''}">${esc(ESTADO_PEDIDO[s]?.[0] || s)}</span>`;
-  const TIPO_SOLICITUD = { reserva: 'Reservar espacio', contacto: 'Contacto', aviso_producto: 'Avísame (tienda)' };
+  const TIPO_SOLICITUD = { reserva: 'Reservar espacio', contacto: 'Contacto', aviso_producto: 'Avísame (tienda)', encargo: 'Pídelo de China' };
 
   /** Pide un archivo protegido (fotos) con la sesión y devuelve una URL local. */
   async function urlBlob(ruta) {
@@ -312,7 +312,8 @@
 
   /* ---------- Importar desde 1688 (importador-1688.js) ---------- */
 
-  async function importarModal() {
+  /** `previo.url`: enlace ya pegado (desde un encargo de «Pídelo de China»). Como manejador de clic recibe el evento. */
+  async function importarModal(previo = {}) {
     let estado;
     try { estado = await api('/api/tienda/admin/importar/estado'); } catch (e) { return toast(e.message); }
     // Apify sirve para las dos cosas: buscar por palabra e importar por enlace.
@@ -338,6 +339,7 @@
       `<button class="btn btn-secondary" id="modalCancel">Cancelar</button><button class="btn btn-primary" id="wtImpLeer" ${estado.ia ? '' : 'disabled'}>Leer producto</button>`);
     $('modalCancel').onclick = closeModal;
     if (estado.busqueda) $('wtBusForm').onsubmit = (e) => { e.preventDefault(); buscarEn1688(1, estado); };
+    if (typeof previo?.url === 'string' && previo.url) $('wtImpUrl').value = previo.url;
     $('wtImpLeer').onclick = async () => {
       let varios = ($('wtImpVarios')?.value || '').split(/\s+/).filter((u) => /^https?:\/\//.test(u)).slice(0, 50);
       // Con Apify, un solo enlace (sin capturas ni texto) también se importa por la API.
@@ -703,22 +705,32 @@
     try { lista = await api(`/api/web/solicitudes${verTodas ? '?todas=1' : ''}`); } catch (e) { if (sigueEn('webSolicitudes')) page().innerHTML = fallo('Solicitudes de la web', e); return; }
     if (!sigueEn('webSolicitudes')) return;
     page().innerHTML = `
-      <div class="page-head"><div><h1>Solicitudes de la web</h1><p>«Reservar espacio» del cotizador, mensajes de contacto y avisos de la tienda. Escríbele al cliente y márcala como atendida.</p></div>
+      <div class="page-head"><div><h1>Solicitudes de la web</h1><p>Encargos de «Pídelo de China», «Reservar espacio» del cotizador, mensajes de contacto y avisos de la tienda. Escríbele al cliente y márcala como atendida.</p></div>
         <div class="row"><label class="wt-check" style="margin:0"><input type="checkbox" id="wtTodas" ${verTodas ? 'checked' : ''}> Ver también las atendidas</label></div></div>
       <div class="wt-solicitudes">${lista.map((s) => {
         const c = s.cotizacion;
-        const link = wa(s.telefono, `Hola ${s.nombre}, te escribimos de Criollo Cargo por tu solicitud en la web.`);
+        const en = s.encargo;
+        const link = wa(s.telefono, en ? `Hola ${s.nombre}, te escribimos de Criollo Cargo por tu encargo «Pídelo de China».` : `Hola ${s.nombre}, te escribimos de Criollo Cargo por tu solicitud en la web.`);
         return `<article class="fx-box wt-sol ${s.atendida ? 'is-done' : ''}">
-          <div class="row" style="justify-content:space-between;align-items:baseline"><b>${esc(s.nombre)}</b><span class="fx-pill ${s.tipo === 'reserva' ? 'generada' : 'pendiente'}">${esc(TIPO_SOLICITUD[s.tipo] || s.tipo)}</span></div>
+          <div class="row" style="justify-content:space-between;align-items:baseline"><b>${esc(s.nombre)}</b><span class="fx-pill ${s.tipo === 'reserva' || en ? 'generada' : 'pendiente'}">${esc(TIPO_SOLICITUD[s.tipo] || s.tipo)}</span></div>
           <small class="fx-muted">${esc(cuando(s.creadoEn))}${s.estado ? ` · ${esc(s.estado)}` : ''}</small>
           <p style="margin:8px 0">${[s.telefono, s.email].filter(Boolean).map(esc).join(' · ')}</p>
           ${c ? `<p style="margin:0 0 8px"><b>${esc(String(c.cbm).replace('.', ','))} m³</b> · ${esc(c.modalidad === 'retiro' ? 'Retiro en Valencia' : `Puerta a puerta${c.estado ? ` a ${c.estado}` : ''}`)} · estimado <b>${usd(c.totalUsd)}</b></p>` : ''}
-          ${s.mensaje ? `<p style="margin:0 0 8px">${esc(s.mensaje)}</p>` : ''}
-          <div class="row">${link ? `<a class="btn btn-secondary btn-sm" href="${esc(link)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}${s.email ? `<a class="btn btn-secondary btn-sm" href="mailto:${esc(s.email)}">Correo</a>` : ''}
+          ${s.mensaje ? `<p style="margin:0 0 8px;white-space:pre-line">${esc(s.mensaje)}</p>` : ''}
+          ${en?.cantidad ? `<p style="margin:0 0 8px"><b>Cantidad:</b> ${esc(en.cantidad)}</p>` : ''}
+          ${en?.enlaces?.length ? `<p style="margin:0 0 8px;overflow-wrap:anywhere">${en.enlaces.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u.replace(/^https?:\/\//, '').slice(0, 60))}</a>`).join('<br>')}</p>` : ''}
+          ${en?.fotos?.length ? `<div class="wt-fotos" style="margin:0 0 8px">${en.fotos.map((f) => `<figure class="wt-foto wt-foto-sol" data-foto-sol="${esc(f.url)}"><span class="fx-muted">…</span></figure>`).join('')}</div>` : ''}
+          <div class="row wt-sol-acciones">${en ? `<button class="btn btn-primary btn-sm" type="button" data-wt-importar="${esc(en.enlaces?.[0] || '')}">Abrir en el importador</button>` : ''}${link ? `<a class="btn btn-secondary btn-sm" href="${esc(link)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}${s.email ? `<a class="btn btn-secondary btn-sm" href="mailto:${esc(s.email)}">Correo</a>` : ''}
             <button class="btn ${s.atendida ? 'btn-secondary' : 'btn-primary'} btn-sm" data-wt-sol="${esc(s.id)}" data-atendida="${s.atendida ? '0' : '1'}">${s.atendida ? 'Reabrir' : 'Marcar atendida'}</button></div>
         </article>`;
       }).join('') || `<div class="card section"><div class="empty">${verTodas ? 'Todavía no hay solicitudes de la web.' : 'No hay solicitudes pendientes.'}</div></div>`}</div>`;
     $('wtTodas').onchange = (e) => { verTodas = e.target.checked; mostrarSolicitudes(); };
+    // Fotos de los encargos (privadas: se piden con la sesión).
+    document.querySelectorAll('[data-foto-sol]').forEach((fig) => {
+      urlBlob(fig.dataset.fotoSol).then((u) => { fig.innerHTML = `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="Foto del encargo"></a>`; }).catch(() => { fig.innerHTML = '<span class="fx-muted">Sin foto</span>'; });
+    });
+    // El encargo se cotiza con el importador: abre la ventana con el primer enlace ya pegado.
+    document.querySelectorAll('[data-wt-importar]').forEach((b) => (b.onclick = () => importarModal({ url: b.dataset.wtImportar })));
     document.querySelectorAll('[data-wt-sol]').forEach((b) => (b.onclick = async () => {
       try { await api(`/api/web/solicitudes/${encodeURIComponent(b.dataset.wtSol)}`, { method: 'PUT', body: JSON.stringify({ atendida: b.dataset.atendida === '1' }) }); mostrarSolicitudes(); } catch (e) { toast(e.message); }
     }));
