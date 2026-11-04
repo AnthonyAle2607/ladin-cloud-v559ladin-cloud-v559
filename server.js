@@ -426,6 +426,7 @@ async function ensureSchema() {
 
   // 9. Web pública (zarpes, rastreo, cotizador, solicitudes) y tienda en preventa
   await webPublica.ensureSchema(db);
+  await require('./encargos').ensureSchema(db);
   await tienda.ensureSchema(db);
 }
 
@@ -1253,6 +1254,7 @@ documentos.registrar(app, { db, auth, intId, logAction });
    ========================================================================== */
 
 webPublica.registrar(app, { db, auth, intId, logAction });
+require('./encargos').registrar(app, { db, auth, intId }); // «Pídelo de China»: encargos con enlaces y fotos
 const tiendaApi = tienda.registrar(app, { db, auth, intId, logAction });
 require('./tienda-lote').registrar(app, { db, auth, logAction, ...tiendaApi }); // carga masiva desde Excel/CSV
 require('./importador-1688').registrar(app, { auth, logAction }); // borradores de productos desde 1688 y otros mercados chinos

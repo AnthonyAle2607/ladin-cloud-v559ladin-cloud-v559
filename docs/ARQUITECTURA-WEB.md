@@ -82,6 +82,7 @@ Estados del pedido: `pendiente_pago → pago_reportado → pagado → en_camino 
 | `GET /api/web/rastreo/:codigo` | Rastreo por etiqueta o contenedor: etapa 0–4 (Recepción, Consolidado, Zarpe, Altamar, Entrega) |
 | `GET /api/web/tarifas` · `POST /api/web/cotizar` | Cotizador (mismo cálculo en el navegador y en el servidor) |
 | `POST /api/web/solicitudes` | «Reservar espacio», contacto y «avísame» (`tipo`: `reserva`, `contacto`, `aviso_producto`; campo trampa `sitioWeb`) |
+| `POST /api/web/encargos` | «Pídelo de China»: qué busca, enlaces, cantidad y hasta 3 fotos (multipart) |
 | `GET /api/tienda/catalogo` | Tienda e inicio: categorías con conteo y tarjetas (precio, foto, contenedor, llegada, agotado) |
 | `GET /api/tienda/productos/:slug` | Ficha: variantes disponibles, fotos, descripción, especificaciones y «En el mismo contenedor» |
 | `GET /api/tienda/destinos` | Selector de entrega |
@@ -175,6 +176,25 @@ revisa, pone cupo y contenedor, y publica.
 - «Crear y seguir con otro» encadena varios productos sin cerrar la ventana; con API configurada, se pueden pegar
   varios enlaces (uno por línea) y cada uno queda como borrador. Si falta la migración 20261104, el producto se guarda
   igual (sin su enlace de origen) y el panel lo avisa.
+
+## «Pídelo de China» (encargos)
+
+Para lo que no está en la tienda. La web (`/encargos`) recibe qué busca el cliente (descripción, hasta 5 enlaces,
+cantidad y hasta 3 fotos) y cómo contactarlo; llega al panel en *Solicitudes web* como «Pídelo de China». El equipo lo
+cotiza con el importador («Abrir en el importador» trae el primer enlace ya pegado) y responde por WhatsApp.
+
+- **Por qué no se busca en vivo en la tienda:** cada búsqueda de un visitante gastaría Apify e IA sin control, tardaría
+  más de lo que espera un comprador y mostraría precios de proveedor sin flete, cupo ni revisión. Así el gasto solo
+  ocurre cuando el equipo decide cotizar.
+- `encargos.js`: `POST /api/web/encargos` (multipart; límite 6 cada 15 min por IP; campo trampa `sitioWeb`; fotos
+  verificadas por sus bytes, JPG/PNG/WEBP, 4 MB cada una) y `GET /api/web/solicitudes/:id/fotos/:fotoId` (solo
+  administrador). Las fotos van al bucket privado `tienda` (`encargos/s{id}/…`), tabla `web_solicitud_fotos`.
+- La web reduce las fotos en el navegador (lado mayor 1600 px, JPEG) antes de enviarlas: Vercel no acepta cuerpos de
+  más de ~4,5 MB. Una foto de teléfono de 7 MB queda en ~0,2 MB.
+- Migración `20261105000000_encargos.sql` (tipo `encargo` y tabla de fotos). **Sin ella** el encargo no se pierde: se
+  guarda como contacto con la marca `[Encargo]`, sus enlaces y cantidad, y una nota de que mandó fotos (las fotos no se
+  suben).
+- Probado contra Postgres 17 con y sin la migración (19 comprobaciones) y en el navegador (web → panel → importador).
 
 ## Pendiente de decidir
 
