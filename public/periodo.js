@@ -49,7 +49,8 @@
   }
 
   /** Estadísticas y Reportes leen `db` directamente: mientras se dibujan, `db` es una copia con solo lo del mes. */
-  for (const nombre of ['statsView', 'reportsView']) {
+  // Reportes maneja el período por su cuenta (necesita también los datos de hoy: activas y clientes).
+  for (const nombre of ['statsView']) {
     const original = window[nombre];
     if (typeof original !== 'function') continue;
     window[nombre] = function () {

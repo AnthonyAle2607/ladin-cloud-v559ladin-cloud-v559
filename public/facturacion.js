@@ -72,6 +72,7 @@
   let facturas = [];
   let filtroTexto = '';
   let filtroEstado = '';
+  let filtroAsesorFac = ''; // solo el administrador: vista por asesor (código de asesor)
 
   async function mostrarFacturacion() {
     page().innerHTML = cargando('Facturación');
@@ -79,17 +80,22 @@
     if (!alCambiar('billing')) return;
     const selPeriodo = window.Periodo ? Periodo.selector(facturas.map((f) => f.date)) : '';
     if (window.Periodo) facturas = facturas.filter((f) => Periodo.en(f.date)); // por mes de la factura (Global: todas)
-    const vigentes = facturas.filter((f) => f.status !== 'anulada');
+    const asesoras = isAdmin() ? db.users.filter((u) => u.role === 'asesora') : [];
+    if (filtroAsesorFac && !asesoras.some((u) => u.id === filtroAsesorFac)) filtroAsesorFac = '';
+    const delAsesor = (f) => !filtroAsesorFac || f.advisorId === filtroAsesorFac;
+    const vigentes = facturas.filter((f) => f.status !== 'anulada' && delAsesor(f));
     const sum = (k) => r2(vigentes.reduce((s, f) => s + f[k], 0));
     page().innerHTML = `
-      <div class="page-head"><div><h1>Facturación</h1><p>${isAdmin() ? 'Facturas de servicios de flete, pagos y saldos por cliente.' : 'Facturas de tus clientes (solo lectura).'}</p>${selPeriodo}</div>
+      <div class="page-head"><div><h1>Facturación</h1><p>${isAdmin() ? (filtroAsesorFac ? `Facturas de ${esc(userName(filtroAsesorFac))}.` : 'Facturas de servicios de flete, pagos y saldos por cliente.') : 'Facturas de tus clientes (solo lectura).'}</p>${selPeriodo}</div>
         <div class="row">${isAdmin() ? '<button class="btn btn-primary" id="fxNueva">Nueva factura</button>' : ''}</div></div>
       <div class="fx-kpis">
         <div class="fx-kpi"><span>Facturado</span><b>${usd(sum('total'))}</b><small>${vigentes.length} factura(s) vigentes</small></div>
         <div class="fx-kpi"><span>Cobrado</span><b>${usd(sum('paid'))}</b></div>
         <div class="fx-kpi"><span>Por cobrar</span><b>${usd(r2(sum('total') - sum('paid')))}</b></div>
       </div>
+      ${isAdmin() && !filtroAsesorFac && asesoras.length ? porAsesorHtml(facturas, asesoras) : ''}
       <div class="fx-toolbar">
+        ${isAdmin() ? `<select id="fxAsesor" aria-label="Asesor"><option value="">Todos los asesores</option>${asesoras.map((u) => `<option value="${esc(u.id)}" ${filtroAsesorFac === u.id ? 'selected' : ''}>${esc(u.advisorCode ? `${u.advisorCode} · ${u.name}` : u.name)}${u.active ? '' : ' (inactiva)'}</option>`).join('')}</select>` : ''}
         <input type="search" id="fxBuscar" placeholder="Buscar por código, cliente o asesor" value="${esc(filtroTexto)}" aria-label="Buscar facturas">
         <select id="fxEstado" aria-label="Estado de pago"><option value="">Todos los estados</option>${Object.entries(ESTADO_PAGO).map(([k, v]) => `<option value="${k}" ${filtroEstado === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
       </div>
@@ -97,21 +103,34 @@
     pintarFacturas();
     $('fxBuscar').oninput = (e) => { filtroTexto = e.target.value; pintarFacturas(); };
     $('fxEstado').onchange = (e) => { filtroEstado = e.target.value; pintarFacturas(); };
+    $('fxAsesor')?.addEventListener('change', (e) => { filtroAsesorFac = e.target.value; mostrarFacturacion(); });
+    document.querySelectorAll('[data-fx-asesor]').forEach((b) => (b.onclick = () => { filtroAsesorFac = b.dataset.fxAsesor; mostrarFacturacion(); }));
     $('fxNueva')?.addEventListener('click', () => facturaModal());
   }
 
   function pintarFacturas() {
     const q = filtroTexto.trim().toLowerCase();
-    const filas = facturas.filter((f) => (!filtroEstado || f.paymentStatus === filtroEstado) && (!q || [f.codigo, f.clientName, f.clientCode, f.advisorName].join(' ').toLowerCase().includes(q)));
+    const filas = facturas.filter((f) => (!filtroAsesorFac || f.advisorId === filtroAsesorFac) && (!filtroEstado || f.paymentStatus === filtroEstado) && (!q || [f.codigo, f.clientName, f.clientCode, f.advisorName].join(' ').toLowerCase().includes(q)));
     $('fxFilas').innerHTML = filas.length
       ? filas.map((f) => `<tr><td><span class="code-pill">${esc(f.codigo)}</span></td><td>${esc(fecha(f.date))}</td>
-          <td><b>${esc(f.clientName)}</b><br><small class="fx-muted">${esc(f.clientCode)}</small></td><td>${esc(f.advisorName || '—')}</td>
+          <td><b>${esc(f.clientName)}</b><br><small class="fx-muted">${esc(f.clientCode)}</small></td><td>${esc(f.advisorName || '—')}${f.advisorCode ? `<br><small class="fx-muted">${esc(f.advisorCode)}</small>` : ''}</td>
           <td class="fx-num">${usd(f.total)}</td><td class="fx-num">${usd(f.paid)}</td><td class="fx-num">${f.status === 'anulada' ? '—' : usd(f.balance)}</td>
           <td>${pillPago(f.paymentStatus)}</td>
           <td><div class="fx-table-actions"><button class="btn btn-secondary btn-sm" data-fx-ver="${esc(f.id)}">Ver</button><button class="btn btn-secondary btn-sm" data-fx-pdf="${esc(f.id)}" data-cod="${esc(f.codigo)}">PDF</button></div></td></tr>`).join('')
       : `<tr><td colspan="9"><div class="empty compact">${facturas.length ? 'Ninguna factura coincide con el filtro.' : 'Todavía no hay facturas.'}</div></td></tr>`;
     document.querySelectorAll('[data-fx-ver]').forEach((b) => (b.onclick = () => facturaDetalle(b.dataset.fxVer)));
     document.querySelectorAll('[data-fx-pdf]').forEach((b) => (b.onclick = () => descargarPdf(b.dataset.fxPdf, b.dataset.cod)));
+  }
+
+  /** Resumen por asesor (administrador, sin filtro): facturas, facturado, cobrado y por cobrar del periodo. */
+  function porAsesorHtml(lista, asesoras) {
+    const filas = asesoras.map((u) => {
+      const suyas = lista.filter((f) => f.status !== 'anulada' && f.advisorId === u.id);
+      const t = r2(suyas.reduce((s, f) => s + f.total, 0)), p = r2(suyas.reduce((s, f) => s + f.paid, 0));
+      return { u, n: suyas.length, t, p };
+    }).filter((x) => x.n);
+    if (!filas.length) return '';
+    return `<div class="card section"><h3 style="margin-top:0">Por asesor</h3><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th>Asesor</th><th class="fx-num">Facturas</th><th class="fx-num">Facturado</th><th class="fx-num">Cobrado</th><th class="fx-num">Por cobrar</th><th></th></tr></thead><tbody>${filas.map(({ u, n, t, p }) => `<tr><td><b>${esc(u.name)}</b>${u.advisorCode ? ` <span class="code-pill">${esc(u.advisorCode)}</span>` : ''}</td><td class="fx-num">${n}</td><td class="fx-num">${usd(t)}</td><td class="fx-num">${usd(p)}</td><td class="fx-num"><b>${usd(r2(t - p))}</b></td><td><button class="btn btn-secondary btn-sm" data-fx-asesor="${esc(u.id)}">Ver sus facturas</button></td></tr>`).join('')}</tbody></table></div></div>`;
   }
 
   /* ---------- Nueva factura ---------- */
@@ -274,7 +293,7 @@
      ===================================================================================================== */
 
   let cobFiltroAsesor = '';
-  const COLOR_TRAMO = { '0-15': 'var(--green)', '16-30': 'var(--amber-d)', '31-60': 'var(--brick)', '61+': 'var(--brick)' };
+  const COLOR_TRAMO = { por_llegar: 'var(--navy, #1f3a4d)', '0-15': 'var(--green)', '16-30': 'var(--amber-d)', '31-60': 'var(--brick)', '61+': 'var(--brick)' };
 
   /** Mismo criterio que el servidor: 0412-1234567 / 412-1234567 → 584121234567; respeta códigos de país ya escritos. */
   function numeroWhatsapp(tel) {
@@ -298,16 +317,16 @@
       const color = c.oldestDays > 60 ? 'var(--brick)' : c.oldestDays > 30 ? 'var(--brick)' : c.oldestDays > 15 ? 'var(--amber-d)' : 'var(--green)';
       return `<tr><td><span class="code-pill">${esc(c.clientCode || '—')}</span> <b>${esc(c.clientName)}</b>${c.clientPhone ? `<br><small class="fx-muted">${esc(c.clientPhone)}</small>` : ''}</td>
         ${admin ? `<td>${esc(c.advisorName || '—')}</td>` : ''}
-        <td class="fx-num">${c.invoices.length}</td><td class="fx-num" style="color:${color};font-weight:700">${c.oldestDays} d</td><td class="fx-num"><b>${usd(c.balance)}</b></td>
+        <td class="fx-num">${c.invoices.length}</td><td class="fx-num" style="color:${color};font-weight:700">${c.invoices.every((f) => f.days == null) ? 'Por llegar' : `${c.oldestDays} d`}</td><td class="fx-num"><b>${usd(c.balance)}</b></td>
         <td><div class="fx-table-actions"><button class="btn btn-secondary btn-sm" data-cob-det="${i}">Facturas</button><button class="btn btn-secondary btn-sm" data-cob-rec="${i}">Recordatorio</button><button class="btn btn-secondary btn-sm" data-cob-wsp="${i}">WhatsApp</button></div></td></tr>
-        <tr id="cobDet${i}" hidden><td colspan="${admin ? 6 : 5}"><div class="fx-box" style="margin:0">${c.invoices.map((f) => `<div class="fx-rule-row"><span><span class="code-pill">${esc(f.code)}</span> ${esc(fecha(f.date))} · ${f.days} día(s) · total ${usd(f.total)}</span><span><b>${usd(f.balance)}</b> <button class="btn btn-secondary btn-sm" data-cob-fac="${esc(f.id)}">Ver</button></span></div>`).join('')}</div></td></tr>`;
+        <tr id="cobDet${i}" hidden><td colspan="${admin ? 6 : 5}"><div class="fx-box" style="margin:0">${c.invoices.map((f) => `<div class="fx-rule-row"><span><span class="code-pill">${esc(f.code)}</span> ${esc(fecha(f.date))} · ${f.days == null ? '<b>por llegar a Venezuela</b>' : `${f.days} día(s) desde ${f.arrivalSource === 'factura' ? 'la factura (sin fecha de llegada)' : `la llegada (${esc(fecha(f.arrival))}${f.arrivalSource === 'estimada' ? ', estimada' : ''})`}`} · total ${usd(f.total)}</span><span><b>${usd(f.balance)}</b> <button class="btn btn-secondary btn-sm" data-cob-fac="${esc(f.id)}">Ver</button></span></div>`).join('')}</div></td></tr>`;
     }).join('');
 
     page().innerHTML = `
-      <div class="page-head"><div><h1>Cobranza</h1><p>Saldos por cobrar según los días desde la fecha de la factura. Empieza por los clientes con más atraso.</p></div></div>
+      <div class="page-head"><div><h1>Cobranza</h1><p>Los días cuentan desde que la mercancía llega a Venezuela (fecha de llegada de su contenedor). Lo que aún no llega queda en «Por llegar» y no se cuenta como atraso.</p></div></div>
       <div class="fx-kpis"><div class="fx-kpi"><span>Por cobrar</span><b>${usd(d.totals.balance)}</b><small>${d.totals.invoices} factura(s) · ${d.totals.clients} cliente(s)</small></div>${tramos}</div>
-      ${admin ? `<div class="fx-toolbar"><select id="cobAsesor" aria-label="Asesor"><option value="">Todos los asesores</option>${asesoras.map((u) => `<option value="${esc(u.id)}" ${cobFiltroAsesor === u.id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select></div>` : ''}
-      ${admin && d.byAdvisor.length > 1 ? `<div class="card section"><h3 style="margin-top:0">Por asesor</h3><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th>Asesor</th><th class="fx-num">Clientes con saldo</th><th class="fx-num">Mayor atraso</th><th class="fx-num">Por cobrar</th></tr></thead><tbody>${d.byAdvisor.map((a) => `<tr><td><b>${esc(a.advisorName)}</b></td><td class="fx-num">${a.clients}</td><td class="fx-num">${a.oldestDays} d</td><td class="fx-num"><b>${usd(a.balance)}</b></td></tr>`).join('')}</tbody></table></div></div>` : ''}
+      ${admin ? `<div class="fx-toolbar"><select id="cobAsesor" aria-label="Asesor"><option value="">Todos los asesores</option>${asesoras.map((u) => `<option value="${esc(u.id)}" ${cobFiltroAsesor === u.id ? 'selected' : ''}>${esc(u.advisorCode ? `${u.advisorCode} · ${u.name}` : u.name)}</option>`).join('')}</select></div>` : ''}
+      ${admin && d.byAdvisor.length > 1 ? `<div class="card section"><h3 style="margin-top:0">Por asesor</h3><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th>Asesor</th><th class="fx-num">Clientes con saldo</th><th class="fx-num">Mayor atraso</th><th class="fx-num">Por cobrar</th></tr></thead><tbody>${d.byAdvisor.map((a) => `<tr><td><b>${esc(a.advisorName)}</b>${a.advisorCode ? ` <span class="code-pill">${esc(a.advisorCode)}</span>` : ''}</td><td class="fx-num">${a.clients}</td><td class="fx-num">${a.oldestDays} d</td><td class="fx-num"><b>${usd(a.balance)}</b></td></tr>`).join('')}</tbody></table></div></div>` : ''}
       <div class="card section"><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th>Cliente</th>${admin ? '<th>Asesor</th>' : ''}<th class="fx-num">Facturas</th><th class="fx-num">Mayor atraso</th><th class="fx-num">Saldo</th><th></th></tr></thead><tbody>
         ${filas || `<tr><td colspan="${admin ? 6 : 5}"><div class="empty compact">No hay saldos pendientes. 🎉</div></td></tr>`}</tbody></table></div></div>`;
 
@@ -649,12 +668,28 @@ Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo c
     labelModalOriginal(existing, presetClientId, presetParentId);
     const cuerpo = document.querySelector('#modal .modal-body');
     if (!cuerpo) return;
+    ponerAsesoraEtiqueta(cuerpo, existing);
     // Las subetiquetas heredan cajas y CBM de la principal: el lector va solo en la etiqueta principal.
     if (!presetParentId && !existing?.parentLabelId) ponerLectorPacking(cuerpo);
     if (!existing || !isAdmin()) return;
     cuerpo.insertAdjacentHTML('beforeend', '<div class="fx-box" id="fxApp" style="margin-top:14px"><h3>Lotes y fotos (app del cliente)</h3><span class="fx-muted">Cargando…</span></div>');
     cargarAppEtiqueta(existing);
   };
+
+  /**
+   * Asesora de la etiqueta: la guarda el servidor al crearla (la del cliente en ese momento) y no cambia al reasignar
+   * la cartera, para que etiquetas, estadísticas y comisiones sigan siendo de quien las trabajó.
+   */
+  function ponerAsesoraEtiqueta(cuerpo, etq) {
+    const cliente = etq ? db.clients.find((c) => sameRefId(c.id, etq.clientId)) : null;
+    const asesora = db.users.find((u) => sameRefId(u.id, etq?.advisorId || cliente?.advisorId));
+    const texto = etq
+      ? `<b>Asesora de la etiqueta:</b> ${esc(asesora?.name || 'Sin asignar')}${asesora?.advisorCode ? ` <span class="code-pill">${esc(asesora.advisorCode)}</span>` : ''}${etq.advisorId && cliente && !sameRefId(etq.advisorId, cliente.advisorId) ? ` <span class="fx-muted">· el cliente hoy está con ${esc(userName(cliente.advisorId))}</span>` : ''}`
+      : '<span class="fx-muted">La etiqueta queda a nombre de la asesora del cliente (con su código), aunque después se reasigne la cartera.</span>';
+    const html = `<p id="fxAsesoraEtq" style="margin:0 0 10px;font-size:14px">${texto}</p>`;
+    const intro = cuerpo.querySelector('.modal-intro');
+    if (intro) intro.insertAdjacentHTML('afterend', html); else cuerpo.insertAdjacentHTML('afterbegin', html);
+  }
 
   async function cargarAppEtiqueta(etq) {
     const caja = $('fxApp');
@@ -733,14 +768,21 @@ Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo c
     return porNombre ? { cliente: porNombre, seguro: false } : null;
   }
 
+  /**
+   * Pone en el campo lo que leyó la IA. Devuelve false si no tocó nada, o { antes } con lo que tenía escrito: si había
+   * un valor distinto es una corrección (la asesora puso otra cifra que la del packing list) y se marca en rojo.
+   */
   function llenar(id, valor) {
     const el = $(id);
     if (!el || valor == null || valor === '' || el.readOnly) return false;
+    const antes = String(el.value ?? '').trim();
+    const igual = antes !== '' && (antes === String(valor) || (Number.isFinite(Number(antes.replace(',', '.'))) && Number(antes.replace(',', '.')) === Number(valor)));
+    if (igual) return false;
     el.value = valor;
     el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.style.outline = '2px solid var(--amber, #e09a1a)';
-    setTimeout(() => { el.style.outline = ''; }, 4000);
-    return true;
+    el.style.outline = `2px solid ${antes ? 'var(--brick, #b4492b)' : 'var(--amber, #e09a1a)'}`;
+    setTimeout(() => { el.style.outline = ''; }, 6000);
+    return { antes };
   }
 
   function ponerLectorPacking(cuerpo) {
@@ -760,9 +802,15 @@ Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo c
         const f = new FormData();
         f.append('archivo', await comprimirImagen(archivo));
         const r = await enviar('/api/packing-list/leer', f);
-        aplicarPacking(r);
+        // El administrador puede leer un archivo que no parece packing list, pero no se llena nada sin que lo confirme.
+        if (!r.datos.esPackingList) {
+          $('fxPackingRes').innerHTML = `<p class="fx-bad" style="margin:10px 0 6px"><b>La IA revisó el archivo y no parece un packing list.</b> No se llenó ningún campo.</p>
+            <button class="btn btn-secondary btn-sm" id="fxPackingIgual" type="button">Es un packing list: llenar de todos modos</button>`;
+          $('fxPackingIgual').onclick = () => aplicarPacking(r);
+        } else aplicarPacking(r);
       } catch (e) {
-        $('fxPackingRes').innerHTML = `<p class="fx-bad">${esc(e.message)}</p>`;
+        // A las asesoras el servidor les rechaza lo que no es un packing list (filtro con IA).
+        $('fxPackingRes').innerHTML = `<p class="fx-bad" style="margin:10px 0 0">${esc(e.message)}</p>`;
       } finally {
         boton.disabled = false; boton.textContent = 'Leer y autocompletar';
       }
@@ -771,9 +819,13 @@ Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo c
 
   function aplicarPacking({ datos: d, sugerido: s, avisos }) {
     const llenos = [];
-    if (llenar('mBoxesPacking', s.cajas)) llenos.push('cajas');
-    if (llenar('mCbmPacking', s.cbm)) llenos.push('CBM');
-    if (llenar('mCargoType', s.mercancia)) llenos.push('mercancía');
+    // La asesora que sabe ya puso las cifras correctas (quedan igual); a la que no, la IA le corrige y se lo muestra.
+    const correcciones = [];
+    for (const [id, valor, nombre] of [['mBoxesPacking', s.cajas, 'cajas'], ['mCbmPacking', s.cbm, 'CBM'], ['mCargoType', s.mercancia, 'mercancía']]) {
+      const r = llenar(id, valor);
+      if (!r) continue;
+      if (r.antes) correcciones.push(`${nombre}: ${r.antes} → ${valor}`); else llenos.push(nombre);
+    }
     if ($('mNotes') && !$('mNotes').value.trim()) llenar('mNotes', [d.numeroDocumento && `Packing list ${d.numeroDocumento}`, d.proveedor, d.fecha, s.pesoBrutoKg != null && `${s.pesoBrutoKg} kg brutos`].filter(Boolean).join(' · '));
     // Cliente: solo si todavía no hay uno elegido.
     let clienteTxt = '';
@@ -799,7 +851,8 @@ Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo c
     }
     const n = (v, dec = 3) => (v == null ? '—' : esc(String(Math.round(v * 10 ** dec) / 10 ** dec)));
     $('fxPackingRes').innerHTML = `
-      <p style="margin:10px 0 6px">${llenos.length ? `<b>Autocompletado:</b> ${esc(llenos.join(', '))}.` : '<span class="fx-warn">No se pudo llenar ningún campo.</span>'}
+      ${correcciones.length ? `<p class="fx-bad" style="margin:10px 0 0"><b>Corregido según el packing list:</b> ${esc(correcciones.join(' · '))}. Revisa antes de guardar.</p>` : ''}
+      <p style="margin:10px 0 6px">${llenos.length ? `<b>Autocompletado:</b> ${esc(llenos.join(', '))}.` : correcciones.length ? '' : '<span class="fx-muted">Los datos que escribiste coinciden con el packing list.</span>'}
         <span class="fx-muted">${esc([d.proveedor, d.comprador && `para ${d.comprador}`, d.numeroDocumento && `N.º ${d.numeroDocumento}`, d.fecha].filter(Boolean).join(' · '))}</span></p>
       ${avisos.length ? `<ul class="fx-warn" style="margin:0 0 8px;padding-left:18px">${avisos.map((a) => `<li>${esc(a)}</li>`).join('')}</ul>` : '<p class="fx-muted" style="margin:0 0 8px">Las líneas cuadran con los totales del documento.</p>'}
       ${clienteTxt}${lotesTxt}

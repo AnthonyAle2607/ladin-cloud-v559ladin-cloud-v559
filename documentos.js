@@ -12,6 +12,7 @@
 const path = require('path');
 const multer = require('multer');
 const almacen = require('./almacen');
+const packingIa = require('./packing-ia');
 
 const docs = almacen.crearAlmacen({ bucket: process.env.SUPABASE_BUCKET_DOCUMENTOS || 'documentos', carpetaDisco: path.join(__dirname, 'uploads', 'documentos') });
 
@@ -128,11 +129,20 @@ function registrar(app, { db, auth, intId, logAction }) {
         if (!archivos.length) return res.status(400).json({ error: 'Adjunta al menos un archivo' });
         let guardados = 0;
         const rechazados = [];
-        for (const f of archivos) {
+        const sinRevisar = [];
+        // Filtro con IA para las asesoras (no para el administrador): un «Packing list» que no lo es no se guarda.
+        // Los archivos se revisan a la vez para no pasar el límite de 30 s de Vercel.
+        const filtrar = entidad === 'etiqueta' && tipo === 'packing_list' && req.user.rol !== 'admin';
+        const nombreDe = (f) => Buffer.from(String(f.originalname || 'archivo'), 'latin1').toString('utf8').slice(0, 255);
+        const revisiones = filtrar ? await Promise.all(archivos.map((f) => packingIa.revisarSiEsPackingList(f.buffer, nombreDe(f)))) : [];
+        if (filtrar && revisiones.every((r) => r.es === false)) return res.status(422).json({ error: packingIa.MENSAJE_NO_ES, noEsPackingList: true });
+        for (const [i, f] of archivos.entries()) {
           // multer entrega el nombre como latin1: «cédula.pdf» llegaría como «cÃ©dula.pdf».
-          const nombre = Buffer.from(String(f.originalname || 'archivo'), 'latin1').toString('utf8').slice(0, 255);
+          const nombre = nombreDe(f);
           const t = tipoArchivo(f.buffer, nombre);
           if (!t) { rechazados.push(nombre); continue; }
+          if (filtrar && revisiones[i].es === false) { rechazados.push(`${nombre} (no es un packing list)`); continue; }
+          if (filtrar && revisiones[i].es === null) sinRevisar.push(`${nombre} (${revisiones[i].motivo})`);
           const clave = `${entidad}-${p.id}/${Date.now()}_${Math.random().toString(36).slice(2, 10)}${t.ext}`;
           const g = await docs.guardar(clave, f.buffer, t.mime);
           await db.query('INSERT INTO documentos(entidad,entidad_id,tipo,nombre_original,nombre_guardado,mime_type,tamano,almacen,usuario_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)', [entidad, p.id, tipo, nombre, g.clave, t.mime, f.size, g.almacen, req.user.id]);
@@ -140,7 +150,7 @@ function registrar(app, { db, auth, intId, logAction }) {
         }
         if (!guardados) return res.status(400).json({ error: 'Formato no admitido. Sube PDF, fotos (JPG, PNG, WEBP), Excel o Word.' });
         await logAction(req.user.id, `Documentos adjuntados a ${p.nombre}`, entidad === 'cliente' ? 'clientes' : 'etiquetas', p.id, `${guardados} archivo(s) de tipo ${TIPOS[entidad][tipo]}.`);
-        res.status(201).json({ guardados, rechazados });
+        res.status(201).json({ guardados, rechazados, sinRevisar });
       } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudieron guardar los documentos' }); }
     });
   }
