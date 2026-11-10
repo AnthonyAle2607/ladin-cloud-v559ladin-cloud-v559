@@ -75,13 +75,20 @@
         if (!archivos.length) return toast('Elige al menos un archivo');
         const boton = $('docSubir'), tipo = $('docTipo').value;
         boton.disabled = true;
-        let ok = 0; const fallos = [];
+        let ok = 0; const fallos = []; const sinRevisar = [];
+        // Las asesoras: un «Packing list» lo revisa la IA antes de guardarlo (puede tardar unos segundos).
+        const revisa = tipo === 'packing_list' && me()?.role !== 'admin';
         // Uno por solicitud: así ninguna pasa del límite de 4.5 MB de Vercel.
         for (const [i, file] of archivos.entries()) {
-          boton.textContent = `Subiendo ${i + 1} de ${archivos.length}…`;
-          try { ok += (await subirArchivo(ruta, tipo, file)).guardados; } catch (e) { fallos.push(`${file.name}: ${e.message}`); }
+          boton.textContent = `${revisa ? 'Revisando con IA y subiendo' : 'Subiendo'} ${i + 1} de ${archivos.length}…`;
+          try {
+            const r = await subirArchivo(ruta, tipo, file);
+            ok += r.guardados;
+            sinRevisar.push(...(r.sinRevisar || []));
+            fallos.push(...(r.rechazados || []).filter((x) => /packing list/.test(x)));
+          } catch (e) { fallos.push(`${file.name}: ${e.message}`); }
         }
-        toast(fallos.length ? `${ok} subido(s). No se pudo: ${fallos.join(' · ')}` : `${ok} documento(s) adjuntados`);
+        toast(fallos.length ? `${ok} subido(s). No se pudo: ${fallos.join(' · ')}` : `${ok} documento(s) adjuntados${sinRevisar.length ? ` · sin revisar por la IA: ${sinRevisar.join(', ')}` : ''}`);
         pintar();
       };
     };

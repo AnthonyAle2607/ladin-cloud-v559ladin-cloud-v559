@@ -260,23 +260,13 @@ function registrar(app, { auth, logAction }) {
     const f = req.file;
     if (!f) return res.status(400).json({ error: 'Adjunta el packing list (foto o Excel).' });
     try {
-      let contenido;
-      const mime = tipoDeImagen(f.buffer); // se confía en los bytes, no en el nombre ni en el tipo declarado
-      if (mime) {
-        if (!cfg.imagenes) return res.status(400).json({ error: `El proveedor ${cfg.nombre} no lee imágenes. Sube el packing list en Excel o CSV, o usa OpenAI, Gemini u Ollama.` });
-        contenido = [
-          { type: 'text', text: 'Extrae los datos de este packing list.' },
-          { type: 'image_url', image_url: { url: `data:${mime};base64,${f.buffer.toString('base64')}` } },
-        ];
-      } else if (/\.(xlsx|xls|csv)$/i.test(f.originalname || '')) {
-        contenido = `Extrae los datos de este packing list (exportado de Excel a CSV):\n\n${hojaComoTexto(f.buffer, f.originalname)}`;
-      } else {
-        return res.status(400).json({ error: 'Formato no admitido. Sube una foto (JPG, PNG o WEBP) o un Excel/CSV. Si es PDF, toma una captura de pantalla.' });
+      const { datos, sugerido, avisos, modelo } = await leerPackingList(f.buffer, f.originalname, cfg);
+      // Filtro para las asesoras: si no es un packing list no se llena nada. El administrador recibe los datos con aviso.
+      if (!datos.esPackingList && req.user.rol !== 'admin') {
+        await logAction(req.user.id, 'Documento rechazado por la IA', 'etiquetas', null, `«${String(f.originalname || 'archivo').slice(0, 80)}» no es un packing list.`);
+        return res.status(422).json({ error: MENSAJE_NO_ES, noEsPackingList: true });
       }
-      const respuesta = await preguntarIA(cfg, contenido);
-      const datos = normalizar(respuesta.datos);
-      const { sugerido, avisos } = revisar(datos);
-      await logAction(req.user.id, 'Packing list leído con IA', 'etiquetas', null, `${datos.proveedor || 'Proveedor sin nombre'} · ${sugerido.cajas ?? '?'} cajas · ${sugerido.cbm ?? '?'} CBM (${cfg.nombre}/${respuesta.modelo}).`);
+      await logAction(req.user.id, 'Packing list leído con IA', 'etiquetas', null, `${datos.proveedor || 'Proveedor sin nombre'} · ${sugerido.cajas ?? '?'} cajas · ${sugerido.cbm ?? '?'} CBM (${cfg.nombre}/${modelo}).`);
       res.json({ datos, sugerido, avisos });
     } catch (e) {
       console.error('Lector de packing list:', e.message);
@@ -286,4 +276,51 @@ function registrar(app, { auth, logAction }) {
   });
 }
 
-module.exports = { registrar, normalizar, revisar, numero, configuracion, preguntarIA, tipoDeImagen };
+const MENSAJE_NO_ES = 'La IA revisó el archivo y no es un packing list (la lista de cajas, pesos y medidas del proveedor). Sube el documento correcto.';
+
+/**
+ * Lee un packing list (foto o Excel/CSV) con la IA. Devuelve { datos, sugerido, avisos, modelo }.
+ * Lanza un error con `status` 400 si el formato no se puede leer (PDF, Word…) o el proveedor no lee imágenes.
+ */
+async function leerPackingList(buffer, nombre, cfg = configuracion()) {
+  let contenido;
+  const mime = tipoDeImagen(buffer); // se confía en los bytes, no en el nombre ni en el tipo declarado
+  if (mime) {
+    if (!cfg.imagenes) throw Object.assign(new Error(`El proveedor ${cfg.nombre} no lee imágenes. Sube el packing list en Excel o CSV, o usa OpenAI, Gemini u Ollama.`), { status: 400 });
+    contenido = [
+      { type: 'text', text: 'Extrae los datos de este packing list.' },
+      { type: 'image_url', image_url: { url: `data:${mime};base64,${buffer.toString('base64')}` } },
+    ];
+  } else if (/\.(xlsx|xls|csv)$/i.test(nombre || '')) {
+    contenido = `Extrae los datos de este packing list (exportado de Excel a CSV):\n\n${hojaComoTexto(buffer, nombre)}`;
+  } else {
+    throw Object.assign(new Error('Formato no admitido. Sube una foto (JPG, PNG o WEBP) o un Excel/CSV. Si es PDF, toma una captura de pantalla.'), { status: 400 });
+  }
+  const respuesta = await preguntarIA(cfg, contenido);
+  const datos = normalizar(respuesta.datos);
+  const { sugerido, avisos } = revisar(datos);
+  return { datos, sugerido, avisos, modelo: respuesta.modelo };
+}
+
+/**
+ * Filtro de documentos: ¿este archivo es un packing list? Devuelve { es: true | false | null, motivo }.
+ * `null` = no se pudo comprobar (IA sin configurar, PDF o Word que la IA no lee, o la IA no respondió a tiempo):
+ * en ese caso el archivo se acepta y se avisa que no se revisó.
+ */
+async function revisarSiEsPackingList(buffer, nombre) {
+  const base = configuracion();
+  if (!base.url || !base.modelo) return { es: null, motivo: 'la IA no está configurada' };
+  // Para decidir «es o no es» bastan los modelos rápidos («lite»): se prueban primero y responden en pocos segundos.
+  const modelos = [...base.modelos.filter((m) => /lite/i.test(m)), ...base.modelos.filter((m) => !/lite/i.test(m))];
+  const cfg = { ...base, modelos, modelo: modelos[0] };
+  if (!tipoDeImagen(buffer) && !/\.(xlsx|xls|csv)$/i.test(nombre || '')) return { es: null, motivo: 'la IA solo revisa fotos y Excel/CSV' };
+  try {
+    const { datos } = await leerPackingList(buffer, nombre, cfg);
+    return { es: datos.esPackingList, motivo: datos.esPackingList ? '' : MENSAJE_NO_ES };
+  } catch (e) {
+    console.error('Filtro de packing list:', e.message);
+    return { es: null, motivo: 'la IA no respondió' };
+  }
+}
+
+module.exports = { registrar, normalizar, revisar, numero, configuracion, preguntarIA, tipoDeImagen, leerPackingList, revisarSiEsPackingList, MENSAJE_NO_ES };

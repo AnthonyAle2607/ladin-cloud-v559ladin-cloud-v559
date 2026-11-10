@@ -162,6 +162,8 @@ function labelOut(r, family = {}) {
     id: pref('l', r.id),
     number: r.numero,
     clientId: r.cliente_id ? pref('c', r.cliente_id) : '',
+    // Asesora que trabajó la etiqueta (la del cliente al crearla); no cambia al reasignar la cartera.
+    advisorId: r.asesora_id ? pref('u', r.asesora_id) : '',
     containerId: r.contenedor_id ? pref('co', r.contenedor_id) : '',
     status: r.estado === 'done' ? 'facturado' : (r.estado || 'prep'),
     notes: r.observaciones || '',
@@ -196,6 +198,7 @@ function containerOut(r) {
     origin: r.origen || '',
     departure: formatDateOnly(r.fecha_salida),
     eta: formatDateOnly(r.fecha_estimada),
+    arrival: formatDateOnly(r.fecha_llegada), // llegó a Venezuela: desde aquí cuenta la cobranza
     status: r.estado,
     notes: r.observaciones || '',
     // Web pública (web-publica.js): si sale en el tablero de zarpes, cierre de carga, capacidad y ruta
@@ -401,6 +404,9 @@ async function ensureSchema() {
   await db.query("ALTER TABLE etiquetas ADD COLUMN IF NOT EXISTS familia_codigo VARCHAR(80)");
   await db.query("ALTER TABLE etiquetas ADD COLUMN IF NOT EXISTS etiqueta_padre_id INTEGER");
   await db.query("ALTER TABLE etiquetas ADD COLUMN IF NOT EXISTS tiene_subetiquetas BOOLEAN NOT NULL DEFAULT FALSE");
+  // Asesora de la etiqueta (migración 20261110000000_asesor_etiqueta_llegada.sql); las viejas toman la de su cliente.
+  await db.query("ALTER TABLE etiquetas ADD COLUMN IF NOT EXISTS asesora_id INTEGER");
+  await db.query("UPDATE etiquetas SET asesora_id=(SELECT c.asesora_id FROM clientes c WHERE c.id=etiquetas.cliente_id) WHERE asesora_id IS NULL");
 
   // 5. Historial, Recordatorios, Quejas, Notas
   await db.query(`CREATE TABLE IF NOT EXISTS historial (id SERIAL PRIMARY KEY, usuario_id INTEGER, accion VARCHAR(200), tabla_afectada VARCHAR(100), registro_id INTEGER, descripcion TEXT, fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
@@ -530,7 +536,7 @@ async function getBootstrap(user) {
     user.rol === 'admin' ? [] : [user.id]
   );
 
-  const COLS_CONTENEDOR = "id,numero,origen,TO_CHAR(fecha_salida,'YYYY-MM-DD') AS fecha_salida,TO_CHAR(fecha_estimada,'YYYY-MM-DD') AS fecha_estimada,estado,observaciones";
+  const COLS_CONTENEDOR = "id,numero,origen,TO_CHAR(fecha_salida,'YYYY-MM-DD') AS fecha_salida,TO_CHAR(fecha_estimada,'YYYY-MM-DD') AS fecha_estimada,TO_CHAR(fecha_llegada,'YYYY-MM-DD') AS fecha_llegada,estado,observaciones";
   // Las columnas de la web llegan con la migración 20261103000000_web_tienda.sql; sin ella el panel sigue funcionando.
   const containersQ = await db.query(`SELECT ${COLS_CONTENEDOR},publicar_web,TO_CHAR(fecha_cierre,'YYYY-MM-DD') AS fecha_cierre,capacidad_cbm,ruta FROM contenedores ORDER BY id DESC`)
     .catch(() => db.query(`SELECT ${COLS_CONTENEDOR} FROM contenedores ORDER BY id DESC`));
@@ -755,9 +761,9 @@ app.post('/api/contenedores', auth, async (req, res) => {
     const cleanDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null;
     const r = await db.query(
       `INSERT INTO contenedores(numero,origen,fecha_salida,fecha_estimada,fecha_llegada,estado,observaciones)
-       VALUES($1,$2,NULLIF($3,'')::date,NULLIF($4,'')::date,NULL,$5,$6)
-       RETURNING id,numero,origen,TO_CHAR(fecha_salida,'YYYY-MM-DD') AS fecha_salida,TO_CHAR(fecha_estimada,'YYYY-MM-DD') AS fecha_estimada,estado,observaciones`,
-      [b.number, b.origin || null, cleanDate(b.departure) || '', cleanDate(b.eta) || '', b.status || 'prep', b.notes || null]
+       VALUES($1,$2,NULLIF($3,'')::date,NULLIF($4,'')::date,${LLEGADA_SQL('$5', '$7', true)},$5,$6)
+       RETURNING id,numero,origen,TO_CHAR(fecha_salida,'YYYY-MM-DD') AS fecha_salida,TO_CHAR(fecha_estimada,'YYYY-MM-DD') AS fecha_estimada,TO_CHAR(fecha_llegada,'YYYY-MM-DD') AS fecha_llegada,estado,observaciones`,
+      [b.number, b.origin || null, cleanDate(b.departure) || '', cleanDate(b.eta) || '', b.status || 'prep', b.notes || null, cleanDate(b.arrival) || '']
     );
     await logAction(req.user.id, `Contenedor ${b.number} creado`, 'contenedores', r.rows[0].id, `Se creó el contenedor ${b.number}.`);
     res.status(201).json(containerOut(r.rows[0]));
@@ -776,9 +782,9 @@ app.put('/api/contenedores/:id', auth, async (req, res) => {
     const cleanDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null;
 
     const r = await db.query(
-      `UPDATE contenedores SET numero=$1,origen=$2,fecha_salida=NULLIF($3,'')::date,fecha_estimada=NULLIF($4,'')::date,estado=$5,observaciones=$6 WHERE id=$7
-       RETURNING id,numero,origen,TO_CHAR(fecha_salida,'YYYY-MM-DD') AS fecha_salida,TO_CHAR(fecha_estimada,'YYYY-MM-DD') AS fecha_estimada,estado,observaciones`,
-      [b.number, b.origin || null, cleanDate(b.departure) || '', cleanDate(b.eta) || '', b.status || 'prep', b.notes || null, id]
+      `UPDATE contenedores SET numero=$1,origen=$2,fecha_salida=NULLIF($3,'')::date,fecha_estimada=NULLIF($4,'')::date,fecha_llegada=${LLEGADA_SQL('$5', '$8')},estado=$5,observaciones=$6 WHERE id=$7
+       RETURNING id,numero,origen,TO_CHAR(fecha_salida,'YYYY-MM-DD') AS fecha_salida,TO_CHAR(fecha_estimada,'YYYY-MM-DD') AS fecha_estimada,TO_CHAR(fecha_llegada,'YYYY-MM-DD') AS fecha_llegada,estado,observaciones`,
+      [b.number, b.origin || null, cleanDate(b.departure) || '', cleanDate(b.eta) || '', b.status || 'prep', b.notes || null, id, cleanDate(b.arrival) || '']
     );
 
     if (!r.rows.length) return res.status(404).json({ error: 'Contenedor no encontrado' });
@@ -820,6 +826,21 @@ app.delete('/api/contenedores/:id', auth, async (req, res) => {
 /* ==========================================================================
    GESTIÓN DE ETIQUETAS Y FAMILIAS (SUBETIQUETAS)
    ========================================================================== */
+
+/**
+ * Fecha de llegada a Venezuela al guardar un contenedor: con estado «En Venezuela», «Entregado» o «Cerrado» se usa la
+ * fecha que indique el administrador o, si no indica ninguna, la que ya tenía o la de hoy. En los demás estados, vacía.
+ * La cobranza cuenta los días de cada factura desde esta fecha.
+ */
+const LLEGADA_SQL = (estado, fecha, nuevo = false) => `CASE WHEN ${estado} IN ('ve','done','closed') THEN COALESCE(NULLIF(${fecha},'')::date,${nuevo ? '' : 'fecha_llegada,'}CURRENT_DATE) ELSE NULL END`;
+
+/** Guarda en la etiqueta su asesora. Sin la migración 20261110000000 la columna no existe: la etiqueta se guarda igual. */
+async function fijarAsesoraEtiqueta(fila, asesoraId) {
+  try {
+    await db.query('UPDATE etiquetas SET asesora_id=$1 WHERE id=$2', [asesoraId || null, fila.id]);
+    fila.asesora_id = asesoraId || null;
+  } catch (e) { console.error('Asesora de la etiqueta no guardada (¿falta la migración 20261110000000?):', e.message); }
+}
 
 app.post('/api/etiquetas', auth, async (req, res) => {
   try {
@@ -876,6 +897,7 @@ app.post('/api/etiquetas', auth, async (req, res) => {
       [labelNumber, clientId, containerId, status, b.notes || null, b.cargoType || null, boxesPacking, boxesChina, null, cbmPacking, cbmChina, familyCode, parentId, hasSubs, cleanDate(b.arrivalChina) || '', null]
     );
 
+    await fijarAsesoraEtiqueta(r.rows[0], c.rows[0].asesora_id);
     await logAction(req.user.id, `Etiqueta ${labelNumber} agregada`, 'etiquetas', r.rows[0].id, `Se creó la etiqueta ${labelNumber}.`);
     res.status(201).json(labelOut(r.rows[0]));
   } catch (e) {
@@ -888,10 +910,10 @@ app.post('/api/etiquetas', auth, async (req, res) => {
 app.put('/api/etiquetas/:id', auth, async (req, res) => {
   try {
     const id = intId(req.params.id);
-    const oldQ = await db.query('SELECT e.*,c.asesora_id,(SELECT COUNT(*) FROM etiquetas x WHERE x.etiqueta_padre_id=e.id) AS child_count FROM etiquetas e LEFT JOIN clientes c ON c.id=e.cliente_id WHERE e.id=$1', [id]);
+    const oldQ = await db.query('SELECT e.*,c.asesora_id AS cliente_asesora_id,(SELECT COUNT(*) FROM etiquetas x WHERE x.etiqueta_padre_id=e.id) AS child_count FROM etiquetas e LEFT JOIN clientes c ON c.id=e.cliente_id WHERE e.id=$1', [id]);
     if (!oldQ.rows.length) return res.status(404).json({ error: 'Etiqueta no encontrada' });
     const old = oldQ.rows[0];
-    if (req.user.rol !== 'admin' && old.asesora_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso' });
+    if (req.user.rol !== 'admin' && old.cliente_asesora_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso' });
 
     const b = req.body || {}, clientId = intId(b.clientId), containerId = b.containerId ? intId(b.containerId) : null, parentId = b.parentLabelId ? intId(b.parentLabelId) : null;
     let labelNumber = String(b.number || old.numero).trim(), familyCode = old.familia_codigo || null, hasSubs = !!b.hasSubLabels;
@@ -906,6 +928,11 @@ app.put('/api/etiquetas/:id', auth, async (req, res) => {
       [labelNumber, clientId, containerId, status, b.notes || null, !!b.ready, b.cargoType || null, boxesPacking, boxesChina, cbmPacking, cbmChina, familyCode, parentId, hasSubs, id]
     );
 
+    // Si la etiqueta pasa a otro cliente, queda con la asesora de ese cliente; si no, conserva la suya.
+    if (Number(old.cliente_id) !== Number(clientId)) {
+      const nuevo = await db.query('SELECT asesora_id FROM clientes WHERE id=$1', [clientId]);
+      await fijarAsesoraEtiqueta(r.rows[0], nuevo.rows[0]?.asesora_id ?? null);
+    }
     await logAction(req.user.id, `Etiqueta ${labelNumber} actualizada`, 'etiquetas', id, `Se actualizó la etiqueta.`);
     await appMovil.avisarCambioDeEstado(db, old, r.rows[0]); // avisa al cliente solo si cambió lo que ve en la app
     res.json(labelOut(r.rows[0]));

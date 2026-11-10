@@ -217,6 +217,15 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
     } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo cargar la factura' }); }
   });
 
+  /** La asesora de las etiquetas, si todas tienen la misma (migración 20261110000000); si no, null. */
+  async function asesoraDeEtiquetas(ids) {
+    if (!ids.length) return null;
+    try {
+      const r = await db.query('SELECT DISTINCT asesora_id FROM etiquetas WHERE id = ANY($1::int[]) AND asesora_id IS NOT NULL', [[...new Set(ids)]]);
+      return r.rows.length === 1 ? Number(r.rows[0].asesora_id) : null;
+    } catch { return null; } // sin la columna (migración no aplicada): se usa la asesora del cliente
+  }
+
   app.post('/api/facturas', auth, soloAdmin, async (req, res) => {
     let tx = null;
     try {
@@ -233,8 +242,11 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
         const dup = (await db.query("SELECT f.codigo FROM factura_items fi JOIN facturas f ON f.id=fi.factura_id WHERE fi.etiqueta_id=$1 AND f.estado<>'anulada'", [id])).rows[0];
         if (dup) return res.status(409).json({ error: `Una etiqueta de este pedido ya está en la factura ${dup.codigo}` });
       }
-      const regla = await reglaDe(db, cliente.asesora_id);
-      const comision = cliente.asesora_id ? calcularComision(regla, items, total) : null;
+      // Asesora de la factura y de su comisión: la que trabajó las etiquetas que se facturan (si todas son de la misma),
+      // aunque el cliente se haya reasignado después; si no, la asesora actual del cliente.
+      const asesoraId = (await asesoraDeEtiquetas(yaFacturadas)) || cliente.asesora_id || null;
+      const regla = await reglaDe(db, asesoraId);
+      const comision = asesoraId ? calcularComision(regla, items, total) : null;
 
       tx = await db.connect();
       await tx.query('BEGIN');
@@ -247,7 +259,7 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
       const ins = await tx.query(
         `INSERT INTO facturas(cliente_id,asesora_id,fecha_factura,fecha_pedido,fecha_carga,fecha_estimada_llegada,direccion,metodo_envio,metodo_pago,modo_entrega,forma_declarar,otros_servicios,observaciones,total,creado_por)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
-        [clienteId, cliente.asesora_id || null, fechaFactura, fecha(b.orderDate), fecha(b.loadDate), fecha(b.eta), texto(b.address, 250), texto(b.shipping, 100), texto(b.paymentMethod, 100), texto(b.delivery, 100), texto(b.declaration, 100), texto(b.otherServices, 250), texto(b.notes, 2000), total, req.user.id]);
+        [clienteId, asesoraId, fechaFactura, fecha(b.orderDate), fecha(b.loadDate), fecha(b.eta), texto(b.address, 250), texto(b.shipping, 100), texto(b.paymentMethod, 100), texto(b.delivery, 100), texto(b.declaration, 100), texto(b.otherServices, 250), texto(b.notes, 2000), total, req.user.id]);
       const id = ins.rows[0].id;
       const codigo = `F-${fechaFactura.slice(0, 4)}-${String(id).padStart(6, '0')}`;
       await tx.query('UPDATE facturas SET codigo=$1 WHERE id=$2', [codigo, id]);
@@ -257,7 +269,7 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
       }
       if (comision) {
         await tx.query('INSERT INTO comisiones(factura_id,asesora_id,cliente_id,base,regla,tasa,monto) VALUES($1,$2,$3,$4,$5,$6,$7)',
-          [id, cliente.asesora_id, clienteId, comision.base, regla.tipo, regla.valor, comision.monto]);
+          [id, asesoraId, clienteId, comision.base, regla.tipo, regla.valor, comision.monto]);
       }
       await tx.query('COMMIT');
       await logAction(req.user.id, `Factura ${codigo} emitida`, 'facturas', id, `Cliente ${cliente.codigo_cliente || cliente.nombre}, total $${total.toFixed(2)}.`);
@@ -628,29 +640,60 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
     { id: '61+', label: 'Más de 60 días', min: 61, max: Infinity },
   ];
 
+  /**
+   * Llegada a Venezuela de la mercancía de cada factura (la cobranza cuenta desde ahí, no desde la fecha de factura):
+   *  - con etiquetas: la fecha de llegada del último contenedor en llegar; si alguno aún no llega, «por llegar».
+   *  - sin etiquetas: la llegada estimada de la factura (si ya pasó) y, si no tiene, la fecha de factura.
+   * Devuelve Map(facturaId → { llegada: 'YYYY-MM-DD' | null, segun: 'contenedor' | 'estimada' | 'factura' | 'por_llegar' }).
+   */
+  async function llegadasDe(facturas, hoy) {
+    const ids = facturas.map((f) => Number(f.id));
+    const items = ids.length ? (await db.query(`SELECT i.factura_id, e.contenedor_id, TO_CHAR(k.fecha_llegada,'YYYY-MM-DD') AS llegada
+      FROM factura_items i JOIN etiquetas e ON e.id=i.etiqueta_id LEFT JOIN contenedores k ON k.id=e.contenedor_id
+      WHERE i.factura_id = ANY($1::int[])`, [ids])).rows : [];
+    const porFactura = new Map();
+    for (const it of items) { const l = porFactura.get(Number(it.factura_id)) || []; l.push(it.llegada || null); porFactura.set(Number(it.factura_id), l); }
+    const r = new Map();
+    for (const f of facturas) {
+      const llegadas = porFactura.get(Number(f.id));
+      if (llegadas?.length) {
+        r.set(Number(f.id), llegadas.some((x) => !x) ? { llegada: null, segun: 'por_llegar' } : { llegada: llegadas.sort().at(-1), segun: 'contenedor' });
+      } else if (f.fecha_estimada_llegada) {
+        r.set(Number(f.id), f.fecha_estimada_llegada <= hoy ? { llegada: f.fecha_estimada_llegada, segun: 'estimada' } : { llegada: null, segun: 'por_llegar' });
+      } else r.set(Number(f.id), { llegada: f.fecha_factura, segun: 'factura' });
+    }
+    return r;
+  }
+
   app.get('/api/cobranza', auth, async (req, res) => {
     try {
       const admin = req.user.rol === 'admin';
       const asesoraId = admin ? intId(req.query.asesora) : req.user.id;
       const rows = (await db.query(`${FACTURA_SQL} WHERE f.estado='emitida' AND f.pagado < f.total ${asesoraId ? 'AND f.asesora_id=$1' : ''} ORDER BY f.fecha_factura`, asesoraId ? [asesoraId] : [])).rows;
       const hoy = new Date().toISOString().slice(0, 10);
+      const llegadas = await llegadasDe(rows, hoy);
+      // «Por llegar»: la mercancía aún no llega a Venezuela, así que todavía no corre el plazo de cobro.
+      const transito = { id: 'por_llegar', label: 'Por llegar a Venezuela', balance: 0, invoices: 0 };
       const buckets = TRAMOS.map((t) => ({ id: t.id, label: t.label, balance: 0, invoices: 0 }));
       const porCliente = new Map();
       const porAsesor = new Map();
       for (const f of rows) {
         const saldo = r2(Number(f.total) - Number(f.pagado));
         if (saldo <= 0.005) continue;
-        const dias = Math.max(0, diasEntre(f.fecha_factura, hoy));
-        const b = buckets[TRAMOS.findIndex((t) => dias >= t.min && dias <= t.max)];
+        const ll = llegadas.get(Number(f.id));
+        const dias = ll.llegada ? Math.max(0, diasEntre(ll.llegada, hoy)) : null;
+        const b = dias == null ? transito : buckets[TRAMOS.findIndex((t) => dias >= t.min && dias <= t.max)];
         b.balance = r2(b.balance + saldo); b.invoices++;
-        const k = f.cliente_id;
-        const c = porCliente.get(k) || { clientId: `c${f.cliente_id}`, clientCode: f.codigo_cliente || '', clientName: [f.cliente_nombre, f.cliente_apellido].filter(Boolean).join(' '), clientPhone: f.cliente_telefono || '', advisorId: f.asesora_id ? `u${f.asesora_id}` : '', advisorName: f.asesora_nombre || '', balance: 0, oldestDays: 0, invoices: [] };
-        c.balance = r2(c.balance + saldo); c.oldestDays = Math.max(c.oldestDays, dias);
-        c.invoices.push({ id: String(f.id), code: f.codigo, date: f.fecha_factura, days: dias, total: Number(f.total), balance: saldo });
+        // Por cliente Y asesora: tras una reasignación, un cliente puede tener facturas de dos asesoras y cada una responde por las suyas.
+        const k = `${f.cliente_id}-${f.asesora_id || 0}`;
+        const c = porCliente.get(k) || { clientId: `c${f.cliente_id}`, clientCode: f.codigo_cliente || '', clientName: [f.cliente_nombre, f.cliente_apellido].filter(Boolean).join(' '), clientPhone: f.cliente_telefono || '', advisorId: f.asesora_id ? `u${f.asesora_id}` : '', advisorName: f.asesora_nombre || '', advisorCode: f.codigo_asesora || '', balance: 0, oldestDays: 0, invoices: [] };
+        c.balance = r2(c.balance + saldo); c.oldestDays = Math.max(c.oldestDays, dias ?? 0);
+        c.invoices.push({ id: String(f.id), code: f.codigo, date: f.fecha_factura, arrival: ll.llegada, arrivalSource: ll.segun, days: dias, total: Number(f.total), balance: saldo });
         porCliente.set(k, c);
       }
+      buckets.unshift(transito);
       for (const c of porCliente.values()) {
-        const a = porAsesor.get(c.advisorId) || { advisorId: c.advisorId, advisorName: c.advisorName || 'Sin asesor', balance: 0, clients: 0, oldestDays: 0 };
+        const a = porAsesor.get(c.advisorId) || { advisorId: c.advisorId, advisorName: c.advisorName || 'Sin asesor', advisorCode: c.advisorCode || '', balance: 0, clients: 0, oldestDays: 0 };
         a.balance = r2(a.balance + c.balance); a.clients++; a.oldestDays = Math.max(a.oldestDays, c.oldestDays);
         porAsesor.set(c.advisorId, a);
       }

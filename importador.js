@@ -218,6 +218,12 @@ function registrar(app, { db, auth, logAction, intId }) {
         }
       }
       await tx.query(simular ? 'ROLLBACK' : 'COMMIT');
+      // Las etiquetas nuevas quedan con la asesora de su cliente. Va fuera de la transacción: sin la migración
+      // 20261110000000 la columna no existe y la importación no debe fallar por eso.
+      if (!simular && a.tipo === 'etiquetas') {
+        await db.query('UPDATE etiquetas SET asesora_id=(SELECT c.asesora_id FROM clientes c WHERE c.id=etiquetas.cliente_id) WHERE asesora_id IS NULL')
+          .catch((e) => console.error('Asesora de las etiquetas importadas no guardada:', e.message));
+      }
       if (!simular) await logAction(req.user.id, `Importación de ${def.etiqueta.toLowerCase()}`, a.tipo, 0, `${r.created} creado(s), ${r.updated} actualizado(s), ${r.skipped} omitido(s), ${r.errors.length} con error. Archivo: ${String(req.file.originalname).slice(0, 80)}.`);
       res.json({ simulated: simular, ...r, errors: r.errors.slice(0, 200), errorCount: r.errors.length });
     } catch (e) {
