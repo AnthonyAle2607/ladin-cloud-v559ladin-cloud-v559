@@ -429,6 +429,7 @@ async function ensureSchema() {
 
   // 8. Documentos adjuntos de clientes y etiquetas
   await documentos.ensureSchema(db);
+  await require('./packing-cliente').ensureSchema(db);
 
   // 9. Web pública (zarpes, rastreo, cotizador, solicitudes) y tienda en preventa
   await webPublica.ensureSchema(db);
@@ -1269,11 +1270,12 @@ app.get('/api/admin/backup-csv.zip', auth, async (req, res) => {
    APP MÓVIL DE CLIENTES (/api/app/*) Y RUTAS DEL PERSONAL QUE LA ALIMENTAN
    ========================================================================== */
 
-appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction });
+const { authCliente } = appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction });
+// Packing lists que sube el cliente desde la app (la IA los revisa); en el panel ya no hay lector con IA.
+require('./packing-cliente').registrar(app, { db, auth, intId, logAction, authCliente });
 facturacion.registrar(app, { db, auth, intId, logAction, JWT_SECRET });
 importador.registrar(app, { db, auth, intId, logAction });
 require('./usuarios').registrar(app, { db, auth, intId, logAction, userOut, getBootstrap });
-require('./packing-ia').registrar(app, { auth, logAction });
 documentos.registrar(app, { db, auth, intId, logAction });
 
 /* ==========================================================================
