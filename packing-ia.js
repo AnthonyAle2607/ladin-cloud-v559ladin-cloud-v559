@@ -1,8 +1,7 @@
 /**
  * Lector de packing list con IA: recibe la foto (JPG, PNG o WEBP) o el Excel/CSV del packing list del proveedor,
- * se lo pasa a un modelo de IA y devuelve los datos ordenados para autocompletar la etiqueta.
- *
- *   POST /api/packing-list/leer   multipart con `archivo` → { datos, sugerido, avisos }   (no guarda nada)
+ * se lo pasa a un modelo de IA y devuelve los datos ordenados. Lo usa packing-cliente.js con el packing list que sube
+ * el CLIENTE desde la app móvil. En el panel no hay IA: la asesora llena la etiqueta a mano.
  *
  * Funciona con cualquier proveedor que hable la API de OpenAI (chat/completions): OpenAI, Gemini, Ollama, DeepSeek…
  *   IA_PROVEEDOR = openai | gemini | ollama | deepseek   (fija la URL y el modelo por defecto)
@@ -241,42 +240,6 @@ function revisar(d) {
   };
 }
 
-/* ---------- ruta ---------- */
-
-function registrar(app, { auth, logAction }) {
-  const subir = multer({ storage: multer.memoryStorage(), limits: { files: 1, fileSize: MAX_BYTES } });
-
-  app.get('/api/packing-list/estado', auth, (req, res) => {
-    const cfg = configuracion();
-    res.json({ activo: Boolean(cfg.url && cfg.modelo), proveedor: cfg.nombre, modelo: cfg.modelo, imagenes: cfg.imagenes });
-  });
-
-  // multer se llama a mano para responder en JSON si el archivo pasa de 10 MB (el servidor no tiene manejador de errores).
-  const recibir = (req, res, next) => subir.single('archivo')(req, res, (err) => (err ? res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'El archivo pasa de 10 MB.' : 'No se pudo recibir el archivo.' }) : next()));
-
-  app.post('/api/packing-list/leer', auth, recibir, async (req, res) => {
-    const cfg = configuracion();
-    if (!cfg.url || !cfg.modelo) return res.status(503).json({ error: 'El lector con IA no está configurado: define IA_PROVEEDOR e IA_API_KEY en el .env del servidor.' });
-    const f = req.file;
-    if (!f) return res.status(400).json({ error: 'Adjunta el packing list (foto o Excel).' });
-    try {
-      const { datos, sugerido, avisos, modelo } = await leerPackingList(f.buffer, f.originalname, cfg);
-      // Filtro para las asesoras: si no es un packing list no se llena nada. El administrador recibe los datos con aviso.
-      if (!datos.esPackingList && req.user.rol !== 'admin') {
-        await logAction(req.user.id, 'Documento rechazado por la IA', 'etiquetas', null, `«${String(f.originalname || 'archivo').slice(0, 80)}» no es un packing list.`);
-        return res.status(422).json({ error: MENSAJE_NO_ES, noEsPackingList: true });
-      }
-      await logAction(req.user.id, 'Packing list leído con IA', 'etiquetas', null, `${datos.proveedor || 'Proveedor sin nombre'} · ${sugerido.cajas ?? '?'} cajas · ${sugerido.cbm ?? '?'} CBM (${cfg.nombre}/${modelo}).`);
-      res.json({ datos, sugerido, avisos });
-    } catch (e) {
-      console.error('Lector de packing list:', e.message);
-      const tiempo = e.name === 'TimeoutError' || e.name === 'AbortError';
-      res.status(e.status || (tiempo ? 504 : 502)).json({ error: tiempo ? 'La IA tardó demasiado en responder. Intenta de nuevo.' : e.message || 'No se pudo leer el packing list' });
-    }
-  });
-}
-
-const MENSAJE_NO_ES = 'La IA revisó el archivo y no es un packing list (la lista de cajas, pesos y medidas del proveedor). Sube el documento correcto.';
 
 /**
  * Lee un packing list (foto o Excel/CSV) con la IA. Devuelve { datos, sugerido, avisos, modelo }.
@@ -302,25 +265,4 @@ async function leerPackingList(buffer, nombre, cfg = configuracion()) {
   return { datos, sugerido, avisos, modelo: respuesta.modelo };
 }
 
-/**
- * Filtro de documentos: ¿este archivo es un packing list? Devuelve { es: true | false | null, motivo }.
- * `null` = no se pudo comprobar (IA sin configurar, PDF o Word que la IA no lee, o la IA no respondió a tiempo):
- * en ese caso el archivo se acepta y se avisa que no se revisó.
- */
-async function revisarSiEsPackingList(buffer, nombre) {
-  const base = configuracion();
-  if (!base.url || !base.modelo) return { es: null, motivo: 'la IA no está configurada' };
-  // Para decidir «es o no es» bastan los modelos rápidos («lite»): se prueban primero y responden en pocos segundos.
-  const modelos = [...base.modelos.filter((m) => /lite/i.test(m)), ...base.modelos.filter((m) => !/lite/i.test(m))];
-  const cfg = { ...base, modelos, modelo: modelos[0] };
-  if (!tipoDeImagen(buffer) && !/\.(xlsx|xls|csv)$/i.test(nombre || '')) return { es: null, motivo: 'la IA solo revisa fotos y Excel/CSV' };
-  try {
-    const { datos } = await leerPackingList(buffer, nombre, cfg);
-    return { es: datos.esPackingList, motivo: datos.esPackingList ? '' : MENSAJE_NO_ES };
-  } catch (e) {
-    console.error('Filtro de packing list:', e.message);
-    return { es: null, motivo: 'la IA no respondió' };
-  }
-}
-
-module.exports = { registrar, normalizar, revisar, numero, configuracion, preguntarIA, tipoDeImagen, leerPackingList, revisarSiEsPackingList, MENSAJE_NO_ES };
+module.exports = { normalizar, revisar, numero, configuracion, preguntarIA, tipoDeImagen, leerPackingList };

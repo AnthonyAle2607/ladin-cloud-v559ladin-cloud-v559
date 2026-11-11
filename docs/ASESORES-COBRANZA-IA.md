@@ -42,15 +42,22 @@ facturación por asesor, reportes e IA como filtro de documentos.
 - Se quitaron «Clientes viejos reusables» (seguimiento tipo CRM) y la tabla de contenedores. Las exportaciones CSV
   siguen.
 
-### IA como filtro de packing list (para las asesoras, no para el administrador)
-- **Lector de la etiqueta**: si el archivo no es un packing list, a la asesora se le rechaza y no se llena nada. El
-  administrador ve el aviso y puede «llenar de todos modos».
-- **Documentos de la etiqueta**: un archivo subido como «Packing list» por una asesora lo revisa la IA; si no es un
-  packing list, no se guarda. PDF y Word no los lee la IA: se aceptan con el aviso «sin revisar». Si la IA no
-  responde o no está configurada, también se acepta con aviso.
-- **Corrige a quien no sabe**: si la asesora ya escribió cajas, CBM o mercancía y el packing list dice otra cosa, la
-  IA lo corrige y lo muestra («cajas: 12 → 30»); si coincide, no toca nada.
-- El filtro usa primero los modelos rápidos («lite»): decide en 8–13 s.
+### IA: el packing list lo sube el CLIENTE desde la app (no hay IA en el panel)
+- **App móvil** («Enviar packing list», desde el inicio o desde una etiqueta): el cliente envía la foto (cámara o
+  galería; la app la reduce antes de enviarla) o el Excel del packing list, **con o sin etiqueta**. La IA revisa que sea
+  un packing list: si no lo es, se rechaza con un mensaje para el cliente. Si lo es, guarda lo que leyó (cajas, CBM,
+  mercancía, proveedor). Si la IA no responde a tiempo, se guarda «sin revisar» para no perder el envío. PDF: pide
+  foto o Excel.
+- **Panel → Seguimiento → Packing lists**: lo que enviaron los clientes (el administrador ve todo; cada asesora, lo de
+  sus clientes), con lo que leyó la IA. Se vincula a una etiqueta o se descarta.
+- **Etiqueta → «Packing list del cliente»**: la asesora llena todo a mano y aquí compara con lo que leyó la IA
+  (✓ / «No coincide»). «Corregir con el packing list» pone las cifras del documento y muestra el cambio
+  («cajas: 10 → 33»): **la IA corrige al que no sabe**. También ofrece vincular los packing lists sin etiqueta.
+- **En el panel no hay IA**: se quitó el lector de packing list y el filtro de documentos; las asesoras adjuntan
+  documentos libremente.
+- Rutas: `POST/GET /api/app/packing` (cliente) y `GET/PUT /api/packing-clientes`, `GET …/:id/archivo` (panel).
+  Migración `20261111000000_packing_clientes.sql`. Para la IA usa primero los modelos rápidos y deja el más lento al
+  final: responde en 7–8 s.
 
 ## Migración
 
@@ -60,6 +67,6 @@ cerrados (su fecha estimada, o hoy). Sin la migración el panel funciona, pero l
 
 ## Pruebas
 
-Contra Postgres 17: 30 comprobaciones (asesoras, reasignación, etiquetas, facturas y comisión, cobranza por llegada,
+Contra Postgres 17: 19 comprobaciones del packing list del cliente (IA real) y 30 (asesoras, reasignación, etiquetas, facturas y comisión, cobranza por llegada,
 fecha de llegada del contenedor, filtro sin IA) y 5 con la IA real (foto de producto rechazada, packing list leído y
 guardado). En el navegador: reportes, facturación por asesor, cobranza, contenedor, etiqueta y la corrección de la IA.

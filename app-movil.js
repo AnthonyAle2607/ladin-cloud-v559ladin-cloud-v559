@@ -535,6 +535,9 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
       res.status(500).json({ error: 'No se pudo eliminar la foto' });
     }
   });
+
+  // Otros módulos con rutas de la app (packing-cliente.js) usan la misma sesión de cliente.
+  return { authCliente };
 }
 
 module.exports = { ensureSchema, registrar, avisarCambioDeEstado, estadoApp, fotosDeEtiquetas, fotosDeCliente, borrarArchivos: almacen.borrar };
