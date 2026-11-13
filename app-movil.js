@@ -243,12 +243,12 @@ function registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction }
     try {
       const codigo = String(req.body?.codigo || '').trim();
       const clave = String(req.body?.clave || '');
-      // También vale el código anterior (antes de los CC-###), para que nadie se quede fuera de la app por el cambio.
+      // También vale el código anterior (antes de la nomenclatura CCCN-G-0001), para que nadie se quede fuera de la app por el cambio.
       let r;
       try {
         r = await db.query('SELECT id,nombre,apellido,clave_hash FROM clientes WHERE (UPPER(codigo_cliente)=UPPER($1) OR UPPER(codigo_anterior)=UPPER($1)) AND clave_hash IS NOT NULL ORDER BY (UPPER(codigo_cliente)=UPPER($1)) DESC LIMIT 1', [codigo]);
       } catch (e) {
-        if (e.code !== '42703') throw e; // sin la migración 20261115000000
+        if (e.code !== '42703') throw e; // sin la migración 20261117000000
         r = await db.query('SELECT id,nombre,apellido,clave_hash FROM clientes WHERE UPPER(codigo_cliente)=UPPER($1) AND clave_hash IS NOT NULL', [codigo]);
       }
       const coincide = await bcrypt.compare(clave, r.rows[0]?.clave_hash || rellenoBcrypt());

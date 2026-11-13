@@ -19,6 +19,7 @@ const ETIQUETA_POR_DEFECTO = {
   nota: '因英文翻译有差异供应商根据交货产品的实际箱数和实际名称自行修改，此标签贴上外',
 };
 const CLAVE = 'etiqueta_almacen';
+const { leerCatalogo, CLAVE_AJUSTE } = require('./codigos');
 const texto = (v, max) => String(v ?? '').trim().slice(0, max);
 
 async function ensureSchema(db) {
@@ -36,7 +37,40 @@ async function leerEtiqueta(db) {
   }
 }
 
+/** Lista del catálogo de códigos: [{ codigo, nombre }] con `largo` letras mayúsculas, sin repetidos. */
+function listaCodigos(v, largo) {
+  const vistos = new Set();
+  return (Array.isArray(v) ? v : [])
+    .map((x) => ({ codigo: texto(x?.codigo, largo).toUpperCase(), nombre: texto(x?.nombre, 60) }))
+    .filter((x) => new RegExp(`^[A-Z]{${largo}}$`).test(x.codigo) && !vistos.has(x.codigo) && vistos.add(x.codigo))
+    .slice(0, 40);
+}
+
 function registrar(app, { db, auth, logAction }) {
+  // Catálogo del código de cliente (sedes, orígenes, tipos y valores por defecto): ver codigos.js.
+  app.get('/api/ajustes/codigo-cliente', auth, async (req, res) => {
+    res.json(await leerCatalogo(db));
+  });
+
+  app.put('/api/ajustes/codigo-cliente', auth, async (req, res) => {
+    try {
+      if (req.user.rol !== 'admin') return res.status(403).json({ error: 'Solo el administrador cambia el catálogo de códigos' });
+      const b = req.body || {};
+      const datos = { sedes: listaCodigos(b.sedes, 2), origenes: listaCodigos(b.origenes, 2), tipos: listaCodigos(b.tipos, 1) };
+      if (!datos.sedes.length || !datos.origenes.length || !datos.tipos.length) return res.status(400).json({ error: 'Debe haber al menos una sede, un origen y un tipo' });
+      const elegir = (lista, v) => (lista.some((x) => x.codigo === String(v || '').toUpperCase()) ? String(v).toUpperCase() : lista[0].codigo);
+      datos.defecto = { sede: elegir(datos.sedes, b.defecto?.sede), origen: elegir(datos.origenes, b.defecto?.origen), tipo: elegir(datos.tipos, b.defecto?.tipo) };
+      const valor = JSON.stringify(datos);
+      const upd = await db.query('UPDATE ajustes SET valor=$1, actualizado_en=CURRENT_TIMESTAMP WHERE clave=$2', [valor, CLAVE_AJUSTE]);
+      if (!upd.rowCount) await db.query('INSERT INTO ajustes(clave,valor) VALUES($1,$2)', [CLAVE_AJUSTE, valor]);
+      await logAction(req.user.id, 'Catálogo del código de cliente actualizado', 'ajustes', 0, `${datos.sedes.length} sede(s), ${datos.origenes.length} origen(es), ${datos.tipos.length} tipo(s).`);
+      res.json(datos);
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: e.code === '42P01' ? 'Falta aplicar la migración 20261113000000_costo_cliente_comision_base.sql' : 'No se pudo guardar el catálogo' });
+    }
+  });
+
   app.get('/api/ajustes/etiqueta-almacen', auth, async (req, res) => {
     res.json(await leerEtiqueta(db));
   });
