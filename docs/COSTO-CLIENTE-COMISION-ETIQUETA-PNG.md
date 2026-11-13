@@ -31,7 +31,7 @@ Sin ella el panel sigue funcionando, pero no guarda el costo ni la tarifa base y
 
 ## 4. Etiqueta PNG (formato almacén de Yiwu)
 
-- Botón «Etiqueta PNG» en el detalle de la etiqueta y al editarla. Muestra la vista previa, permite ajustar cajas y
+- Botón «Etiqueta PNG» en el detalle de la etiqueta principal y al editarla (las subetiquetas no la tienen). Muestra la vista previa, permite ajustar cajas y
   mercancía, y «Descargar PNG» (o «Compartir» en el teléfono).
 - Variables: 客服编号 = código del asesor, 客户编号 = código del cliente, 单据编号 = número de etiqueta, 箱数 = cajas,
   名称 = mercancía.
