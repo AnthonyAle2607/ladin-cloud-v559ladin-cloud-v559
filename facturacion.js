@@ -19,6 +19,7 @@ const REGLAS = {
   porcentaje_total: 'Porcentaje sobre el total de la factura',
   porcentaje_flete: 'Porcentaje sobre el flete marítimo (CBM × tarifa)',
   fijo_cbm: 'Monto fijo por CBM',
+  porcentaje_tarifa_base: 'Porcentaje sobre una tarifa base por CBM (más baja que la cobrada)',
 };
 const REGLA_POR_DEFECTO = { tipo: 'porcentaje_total', valor: 0 };
 
@@ -51,22 +52,35 @@ function numeroWhatsapp(telefono) {
 const diasEntre = (desde, hasta) => Math.floor((Date.UTC(+hasta.slice(0, 4), +hasta.slice(5, 7) - 1, +hasta.slice(8, 10)) - Date.UTC(+desde.slice(0, 4), +desde.slice(5, 7) - 1, +desde.slice(8, 10))) / 86400000);
 
 /** Monto de una línea: flete marítimo + traslado terrestre + extra de despacho. */
-function montoLinea({ cbm, tarifaMaritima, volumenTerrestre, tarifaTerrestre, extra }) {
-  return r2(cbm * tarifaMaritima + volumenTerrestre * tarifaTerrestre + extra);
+/** Monto de una línea: el monto acordado con el cliente (si la etiqueta lo tiene) o CBM × tarifa, más terrestre y extra. */
+function montoLinea({ cbm, tarifaMaritima, volumenTerrestre, tarifaTerrestre, extra, montoAcordado = null }) {
+  const flete = montoAcordado != null ? montoAcordado : cbm * tarifaMaritima;
+  return r2(flete + volumenTerrestre * tarifaTerrestre + extra);
 }
 
 function calcularComision(regla, items, total) {
   const valor = Number(regla.valor) || 0;
   const cbm = r3(items.reduce((s, i) => s + i.cbm, 0));
   if (regla.tipo === 'fijo_cbm') return { base: cbm, monto: r2(cbm * valor) };
-  const base = regla.tipo === 'porcentaje_flete' ? r2(items.reduce((s, i) => s + i.cbm * i.tarifaMaritima, 0)) : total;
+  // Sobre una tarifa base por CBM más baja que la cobrada: base = CBM × tarifa base, y sobre eso el porcentaje.
+  if (regla.tipo === 'porcentaje_tarifa_base') {
+    const base = r2(cbm * (Number(regla.tarifaBase) || 0));
+    return { base, monto: r2((base * valor) / 100) };
+  }
+  // Flete marítimo: el monto acordado de la línea o CBM × tarifa.
+  const base = regla.tipo === 'porcentaje_flete' ? r2(items.reduce((s, i) => s + (i.montoAcordado != null ? i.montoAcordado : i.cbm * i.tarifaMaritima), 0)) : total;
   return { base, monto: r2((base * valor) / 100) };
 }
 
 async function reglaDe(db, asesoraId) {
-  const propia = asesoraId ? (await db.query('SELECT tipo,valor FROM comision_reglas WHERE asesora_id=$1', [asesoraId])).rows[0] : null;
-  const regla = propia || (await db.query('SELECT tipo,valor FROM comision_reglas WHERE asesora_id IS NULL')).rows[0] || REGLA_POR_DEFECTO;
-  return { tipo: regla.tipo, valor: Number(regla.valor) };
+  // Sin la migración 20261113000000 no existe tarifa_base: se leen solo tipo y valor.
+  const leer = async (donde, params) => (await db.query(`SELECT tipo,valor,tarifa_base FROM comision_reglas WHERE ${donde}`, params).catch(() => db.query(`SELECT tipo,valor FROM comision_reglas WHERE ${donde}`, params))).rows[0];
+  const propia = asesoraId ? await leer('asesora_id=$1', [asesoraId]) : null;
+  const global = await leer('asesora_id IS NULL', []);
+  const regla = propia || global || REGLA_POR_DEFECTO;
+  // La tarifa base de la asesora; si su regla no la tiene, la de la regla global.
+  const tarifaBase = regla.tarifa_base != null ? Number(regla.tarifa_base) : global?.tarifa_base != null ? Number(global.tarifa_base) : 0;
+  return { tipo: regla.tipo, valor: Number(regla.valor), tarifaBase };
 }
 
 /* ---------- esquema ---------- */
@@ -96,6 +110,9 @@ async function ensureSchema(db) {
   await db.query(`CREATE TABLE IF NOT EXISTS comision_reglas (
     id SERIAL PRIMARY KEY, asesora_id INTEGER UNIQUE REFERENCES usuarios(id) ON DELETE CASCADE,
     tipo VARCHAR(30) NOT NULL, valor NUMERIC(10,3) NOT NULL DEFAULT 0)`);
+  // Migración 20261113000000: tarifa base de comisión y monto acordado por línea.
+  await db.query('ALTER TABLE comision_reglas ADD COLUMN IF NOT EXISTS tarifa_base NUMERIC(10,2)');
+  await db.query('ALTER TABLE factura_items ADD COLUMN IF NOT EXISTS monto_acordado NUMERIC(12,2)');
   await db.query(`CREATE TABLE IF NOT EXISTS comisiones (
     id SERIAL PRIMARY KEY, factura_id INTEGER NOT NULL UNIQUE REFERENCES facturas(id) ON DELETE CASCADE,
     asesora_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL, cliente_id INTEGER REFERENCES clientes(id) ON DELETE SET NULL,
@@ -134,6 +151,7 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
     id: String(i.id), labelId: i.etiqueta_id ? `l${i.etiqueta_id}` : '', description: i.descripcion, boxes: Number(i.cajas),
     cbm: Number(i.cbm), weight: Number(i.peso), seaRate: Number(i.tarifa_maritima), landVolume: Number(i.volumen_terrestre),
     landRate: Number(i.tarifa_terrestre), extra: Number(i.extra), amount: Number(i.monto),
+    agreedAmount: i.monto_acordado != null ? Number(i.monto_acordado) : null,
   });
 
   const pagoOut = (p) => ({ id: String(p.id), date: p.fecha, amount: Number(p.monto), method: p.metodo || '', reference: p.referencia || '', createdAt: iso(p.fecha_creacion) });
@@ -170,14 +188,17 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
       if (!descripcion) return { error: `Línea ${n + 1}: falta la descripción` };
       const campos = { cbm, cajas, peso, tarifaMaritima, volumenTerrestre, tarifaTerrestre, extra };
       if (Object.values(campos).some((v) => !Number.isFinite(v) || v < 0)) return { error: `Línea ${n + 1}: los números deben ser válidos y no negativos` };
-      if (cbm === 0 && extra === 0) return { error: `Línea ${n + 1}: indica el CBM o un extra` };
+      // Monto acordado con el cliente (viene de la etiqueta); si está, reemplaza CBM × tarifa.
+      const montoAcordado = l?.agreedAmount === '' || l?.agreedAmount == null ? null : num(l.agreedAmount);
+      if (montoAcordado != null && (!Number.isFinite(montoAcordado) || montoAcordado < 0)) return { error: `Línea ${n + 1}: el monto acordado debe ser un número no negativo` };
+      if (cbm === 0 && extra === 0 && !(montoAcordado > 0)) return { error: `Línea ${n + 1}: indica el CBM, un monto acordado o un extra` };
       let etiquetaId = null;
       if (l?.labelId) {
         etiquetaId = intId(l.labelId);
         const e = (await db.query('SELECT id FROM etiquetas WHERE id=$1 AND cliente_id=$2', [etiquetaId, clienteId])).rows[0];
         if (!e) return { error: `Línea ${n + 1}: la etiqueta no pertenece a este cliente` };
       }
-      items.push({ etiquetaId, descripcion, cajas, cbm: r3(cbm), peso: r2(peso), tarifaMaritima: r2(tarifaMaritima), volumenTerrestre: r3(volumenTerrestre), tarifaTerrestre: r2(tarifaTerrestre), extra: r2(extra), monto: montoLinea({ cbm: r3(cbm), tarifaMaritima: r2(tarifaMaritima), volumenTerrestre: r3(volumenTerrestre), tarifaTerrestre: r2(tarifaTerrestre), extra: r2(extra) }) });
+      items.push({ etiquetaId, descripcion, cajas, cbm: r3(cbm), peso: r2(peso), tarifaMaritima: r2(tarifaMaritima), volumenTerrestre: r3(volumenTerrestre), tarifaTerrestre: r2(tarifaTerrestre), extra: r2(extra), montoAcordado: montoAcordado != null ? r2(montoAcordado) : null, monto: montoLinea({ cbm: r3(cbm), tarifaMaritima: r2(tarifaMaritima), volumenTerrestre: r3(volumenTerrestre), tarifaTerrestre: r2(tarifaTerrestre), extra: r2(extra), montoAcordado: montoAcordado != null ? r2(montoAcordado) : null }) });
     }
     return { items };
   }
@@ -196,13 +217,15 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
   app.get('/api/facturas/pendientes/:clienteId', auth, soloAdmin, async (req, res) => {
     try {
       const clienteId = intId(req.params.clienteId);
-      const r = await db.query(
-        `SELECT e.id,e.numero,e.tipo_mercancia,e.cajas_packing_list,e.cajas_en_china,e.cbm_packing_list,e.cbm_real_china FROM etiquetas e
+      const sql = (extra) => `SELECT e.id,e.numero,e.tipo_mercancia,e.cajas_packing_list,e.cajas_en_china,e.cbm_packing_list,e.cbm_real_china${extra} FROM etiquetas e
          WHERE e.cliente_id=$1 AND e.id NOT IN (SELECT fi.etiqueta_id FROM factura_items fi JOIN facturas f ON f.id=fi.factura_id WHERE f.estado<>'anulada' AND fi.etiqueta_id IS NOT NULL)
-         ORDER BY e.id`, [clienteId]);
+         ORDER BY e.id`;
+      const r = await db.query(sql(',e.costo_cliente_usd'), [clienteId]).catch(() => db.query(sql(''), [clienteId]));
       res.json(r.rows.map((e) => ({
         labelId: `l${e.id}`, number: e.numero, description: e.tipo_mercancia || e.numero,
         boxes: Number(e.cajas_en_china ?? e.cajas_packing_list ?? 0), cbm: Number(e.cbm_real_china ?? e.cbm_packing_list ?? 0), seaRate: TARIFA_MARITIMA,
+        // Costo que la asesora acordó con el cliente al crear la etiqueta: llena la factura y, de ahí, la comisión.
+        agreedAmount: e.costo_cliente_usd != null ? Number(e.costo_cliente_usd) : null,
       })));
     } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudieron cargar las etiquetas' }); }
   });
@@ -264,8 +287,13 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
       const codigo = `F-${fechaFactura.slice(0, 4)}-${String(id).padStart(6, '0')}`;
       await tx.query('UPDATE facturas SET codigo=$1 WHERE id=$2', [codigo, id]);
       for (const i of items) {
-        await tx.query('INSERT INTO factura_items(factura_id,etiqueta_id,descripcion,cajas,cbm,peso,tarifa_maritima,volumen_terrestre,tarifa_terrestre,extra,monto) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
-          [id, i.etiquetaId, i.descripcion, i.cajas, i.cbm, i.peso, i.tarifaMaritima, i.volumenTerrestre, i.tarifaTerrestre, i.extra, i.monto]);
+        if (i.montoAcordado != null) {
+          await tx.query('INSERT INTO factura_items(factura_id,etiqueta_id,descripcion,cajas,cbm,peso,tarifa_maritima,volumen_terrestre,tarifa_terrestre,extra,monto,monto_acordado) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+            [id, i.etiquetaId, i.descripcion, i.cajas, i.cbm, i.peso, i.tarifaMaritima, i.volumenTerrestre, i.tarifaTerrestre, i.extra, i.monto, i.montoAcordado]);
+        } else {
+          await tx.query('INSERT INTO factura_items(factura_id,etiqueta_id,descripcion,cajas,cbm,peso,tarifa_maritima,volumen_terrestre,tarifa_terrestre,extra,monto) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+            [id, i.etiquetaId, i.descripcion, i.cajas, i.cbm, i.peso, i.tarifaMaritima, i.volumenTerrestre, i.tarifaTerrestre, i.extra, i.monto]);
+        }
       }
       if (comision) {
         await tx.query('INSERT INTO comisiones(factura_id,asesora_id,cliente_id,base,regla,tasa,monto) VALUES($1,$2,$3,$4,$5,$6,$7)',
@@ -505,12 +533,13 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
 
   app.get('/api/comisiones/reglas', auth, soloAdmin, async (req, res) => {
     try {
-      const r = (await db.query('SELECT asesora_id,tipo,valor FROM comision_reglas')).rows;
+      const r = (await db.query('SELECT asesora_id,tipo,valor,tarifa_base FROM comision_reglas').catch(() => db.query('SELECT asesora_id,tipo,valor FROM comision_reglas'))).rows;
+      const tb = (x) => (x?.tarifa_base != null ? Number(x.tarifa_base) : null);
       const global = r.find((x) => x.asesora_id == null);
       res.json({
         types: REGLAS,
-        global: global ? { type: global.tipo, value: Number(global.valor) } : { type: REGLA_POR_DEFECTO.tipo, value: REGLA_POR_DEFECTO.valor, unset: true },
-        advisors: r.filter((x) => x.asesora_id != null).map((x) => ({ advisorId: `u${x.asesora_id}`, type: x.tipo, value: Number(x.valor) })),
+        global: global ? { type: global.tipo, value: Number(global.valor), baseRate: tb(global) } : { type: REGLA_POR_DEFECTO.tipo, value: REGLA_POR_DEFECTO.valor, baseRate: null, unset: true },
+        advisors: r.filter((x) => x.asesora_id != null).map((x) => ({ advisorId: `u${x.asesora_id}`, type: x.tipo, value: Number(x.valor), baseRate: tb(x) })),
       });
     } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudieron cargar las reglas' }); }
   });
@@ -524,14 +553,23 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
       if (!Number.isFinite(valor) || valor < 0 || (tipo !== 'fijo_cbm' && valor > 100)) return res.status(400).json({ error: tipo === 'fijo_cbm' ? 'El monto por CBM debe ser un número no negativo' : 'El porcentaje debe estar entre 0 y 100' });
       const asesoraId = b.advisorId ? intId(b.advisorId) : null;
       if (asesoraId && !(await db.query("SELECT 1 AS x FROM usuarios WHERE id=$1 AND rol='asesora'", [asesoraId])).rows.length) return res.status(400).json({ error: 'Asesor no válido' });
+      // Tarifa base por CBM (solo para «porcentaje sobre tarifa base»). Vacía en una asesora = usa la de la regla global.
+      const tarifaBase = b.baseRate === '' || b.baseRate == null ? null : num(b.baseRate);
+      if (tipo === 'porcentaje_tarifa_base') {
+        if (tarifaBase != null && (!Number.isFinite(tarifaBase) || tarifaBase <= 0)) return res.status(400).json({ error: 'La tarifa base por CBM debe ser mayor que cero' });
+        if (tarifaBase == null && !asesoraId) return res.status(400).json({ error: 'Indica la tarifa base por CBM (por ejemplo 500)' });
+        if (tarifaBase != null && tarifaBase >= TARIFA_MARITIMA) return res.status(400).json({ error: `La tarifa base debe ser más baja que la tarifa marítima (${TARIFA_MARITIMA} $/CBM)` });
+      }
+      const columnas = tipo === 'porcentaje_tarifa_base' ? ',tarifa_base' : '';
+      const conTarifa = tipo === 'porcentaje_tarifa_base' ? [tarifaBase] : [];
       if (asesoraId) {
         await db.query('DELETE FROM comision_reglas WHERE asesora_id=$1', [asesoraId]);
-        await db.query('INSERT INTO comision_reglas(asesora_id,tipo,valor) VALUES($1,$2,$3)', [asesoraId, tipo, valor]);
+        await db.query(`INSERT INTO comision_reglas(asesora_id,tipo,valor${columnas}) VALUES($1,$2,$3${conTarifa.length ? ',$4' : ''})`, [asesoraId, tipo, valor, ...conTarifa]);
       } else {
         await db.query('DELETE FROM comision_reglas WHERE asesora_id IS NULL');
-        await db.query('INSERT INTO comision_reglas(asesora_id,tipo,valor) VALUES(NULL,$1,$2)', [tipo, valor]);
+        await db.query(`INSERT INTO comision_reglas(asesora_id,tipo,valor${columnas}) VALUES(NULL,$1,$2${conTarifa.length ? ',$3' : ''})`, [tipo, valor, ...conTarifa]);
       }
-      await logAction(req.user.id, 'Regla de comisión actualizada', 'comision_reglas', asesoraId || 0, `${asesoraId ? `Asesor u${asesoraId}` : 'Global'}: ${REGLAS[tipo]} = ${valor}.`);
+      await logAction(req.user.id, 'Regla de comisión actualizada', 'comision_reglas', asesoraId || 0, `${asesoraId ? `Asesor u${asesoraId}` : 'Global'}: ${REGLAS[tipo]} = ${valor}${tarifaBase != null && tipo === 'porcentaje_tarifa_base' ? ` sobre ${tarifaBase} $/CBM` : ''}.`);
       res.json({ ok: true });
     } catch (e) { console.error(e); res.status(500).json({ error: 'No se pudo guardar la regla' }); }
   });
@@ -550,7 +588,8 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
       const pend = (await db.query(`SELECT m.id,m.factura_id,m.asesora_id,f.total FROM comisiones m JOIN facturas f ON f.id=m.factura_id WHERE m.estado='pendiente' AND f.estado='emitida'`)).rows;
       let cambiadas = 0;
       for (const m of pend) {
-        const items = (await db.query('SELECT cbm,tarifa_maritima FROM factura_items WHERE factura_id=$1', [m.factura_id])).rows.map((i) => ({ cbm: Number(i.cbm), tarifaMaritima: Number(i.tarifa_maritima) }));
+        const filas = (await db.query('SELECT cbm,tarifa_maritima,monto_acordado FROM factura_items WHERE factura_id=$1', [m.factura_id]).catch(() => db.query('SELECT cbm,tarifa_maritima FROM factura_items WHERE factura_id=$1', [m.factura_id]))).rows;
+        const items = filas.map((i) => ({ cbm: Number(i.cbm), tarifaMaritima: Number(i.tarifa_maritima), montoAcordado: i.monto_acordado != null ? Number(i.monto_acordado) : null }));
         const regla = await reglaDe(db, m.asesora_id);
         const c = calcularComision(regla, items, Number(m.total));
         await db.query('UPDATE comisiones SET base=$1,regla=$2,tasa=$3,monto=$4 WHERE id=$5', [c.base, regla.tipo, regla.valor, c.monto, m.id]);

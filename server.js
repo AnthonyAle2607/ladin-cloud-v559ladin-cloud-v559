@@ -164,6 +164,8 @@ function labelOut(r, family = {}) {
     clientId: r.cliente_id ? pref('c', r.cliente_id) : '',
     // Asesora que trabajó la etiqueta (la del cliente al crearla); no cambia al reasignar la cartera.
     advisorId: r.asesora_id ? pref('u', r.asesora_id) : '',
+    // Costo total en USD acordado con el cliente al crear la etiqueta (llena la factura y la comisión).
+    clientCost: r.costo_cliente_usd == null ? '' : Number(r.costo_cliente_usd),
     containerId: r.contenedor_id ? pref('co', r.contenedor_id) : '',
     status: r.estado === 'done' ? 'facturado' : (r.estado || 'prep'),
     notes: r.observaciones || '',
@@ -406,6 +408,7 @@ async function ensureSchema() {
   await db.query("ALTER TABLE etiquetas ADD COLUMN IF NOT EXISTS tiene_subetiquetas BOOLEAN NOT NULL DEFAULT FALSE");
   // Asesora de la etiqueta (migración 20261110000000_asesor_etiqueta_llegada.sql); las viejas toman la de su cliente.
   await db.query("ALTER TABLE etiquetas ADD COLUMN IF NOT EXISTS asesora_id INTEGER");
+  await db.query("ALTER TABLE etiquetas ADD COLUMN IF NOT EXISTS costo_cliente_usd NUMERIC(12,2)"); // migración 20261113000000
   await db.query("UPDATE etiquetas SET asesora_id=(SELECT c.asesora_id FROM clientes c WHERE c.id=etiquetas.cliente_id) WHERE asesora_id IS NULL");
 
   // 5. Historial, Recordatorios, Quejas, Notas
@@ -430,6 +433,7 @@ async function ensureSchema() {
   // 8. Documentos adjuntos de clientes y etiquetas
   await documentos.ensureSchema(db);
   await require('./packing-cliente').ensureSchema(db);
+  await require('./ajustes').ensureSchema(db);
 
   // 9. Web pública (zarpes, rastreo, cotizador, solicitudes) y tienda en preventa
   await webPublica.ensureSchema(db);
@@ -835,6 +839,32 @@ app.delete('/api/contenedores/:id', auth, async (req, res) => {
  */
 const LLEGADA_SQL = (estado, fecha, nuevo = false) => `CASE WHEN ${estado} IN ('ve','done','closed') THEN COALESCE(NULLIF(${fecha},'')::date,${nuevo ? '' : 'fecha_llegada,'}CURRENT_DATE) ELSE NULL END`;
 
+/**
+ * Siguiente número correlativo de etiqueta: el mayor número (solo dígitos) de las etiquetas principales + 1, con cuatro
+ * dígitos (0001, 0002…). `minimo` sirve para saltar un número que ya se tomó en un choque.
+ */
+async function siguienteCorrelativo(minimo = 1) {
+  const r = await db.query('SELECT numero FROM etiquetas WHERE etiqueta_padre_id IS NULL');
+  let mayor = 0;
+  for (const x of r.rows) { const t = String(x.numero || '').trim(); if (/^\d{1,12}$/.test(t)) mayor = Math.max(mayor, Number(t)); }
+  return String(Math.max(mayor + 1, minimo)).padStart(4, '0');
+}
+
+/** Costo acordado con el cliente: null si viene vacío, undefined si no es un número válido. */
+function costoCliente(v) {
+  if (v === '' || v == null) return null;
+  const n = Number(String(v).replace(',', '.'));
+  return Number.isFinite(n) && n >= 0 && n < 10000000 ? Math.round(n * 100) / 100 : undefined;
+}
+
+/** Guarda el costo acordado. Sin la migración 20261113000000 la columna no existe: la etiqueta se guarda igual. */
+async function fijarCostoEtiqueta(fila, costo) {
+  try {
+    await db.query('UPDATE etiquetas SET costo_cliente_usd=$1 WHERE id=$2', [costo, fila.id]);
+    fila.costo_cliente_usd = costo;
+  } catch (e) { console.error('Costo de la etiqueta no guardado (¿falta la migración 20261113000000?):', e.message); }
+}
+
 /** Guarda en la etiqueta su asesora. Sin la migración 20261110000000 la columna no existe: la etiqueta se guarda igual. */
 async function fijarAsesoraEtiqueta(fila, asesoraId) {
   try {
@@ -846,14 +876,17 @@ async function fijarAsesoraEtiqueta(fila, asesoraId) {
 app.post('/api/etiquetas', auth, async (req, res) => {
   try {
     const b = req.body || {}, clientId = intId(b.clientId), containerId = b.containerId ? intId(b.containerId) : null;
-    if ((!b.number && !b.parentLabelId) || !clientId) return res.status(400).json({ error: 'Número y cliente son obligatorios' });
+    // El número de la etiqueta principal lo asigna el sistema (correlativo); el de la subetiqueta sale de la principal.
+    if (!clientId) return res.status(400).json({ error: 'El cliente es obligatorio' });
+    const costo = costoCliente(b.clientCost);
+    if (costo === undefined) return res.status(400).json({ error: 'El costo acordado con el cliente debe ser un número en dólares, 0 o mayor' });
 
     const c = await db.query('SELECT asesora_id FROM clientes WHERE id=$1', [clientId]);
     if (!c.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     if (req.user.rol !== 'admin' && c.rows[0].asesora_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso' });
 
     const parentId = b.parentLabelId ? intId(b.parentLabelId) : null;
-    let familyCode = null, hasSubs = !!b.hasSubLabels, labelNumber = String(b.number || '').trim();
+    let familyCode = null, hasSubs = !!b.hasSubLabels, labelNumber = '';
     let boxesPacking = b.boxesPacking === '' || b.boxesPacking == null ? null : intVal(b.boxesPacking),
         boxesChina = b.boxesChina === '' || b.boxesChina == null ? null : intVal(b.boxesChina),
         cbmPacking = b.cbmPacking === '' || b.cbmPacking == null ? null : numVal(b.cbmPacking),
@@ -892,11 +925,24 @@ app.post('/api/etiquetas', auth, async (req, res) => {
     const cleanDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null;
     const status = b.status === 'done' ? 'facturado' : (b.status || 'prep');
 
-    const r = await db.query(
-      `INSERT INTO etiquetas(numero,cliente_id,contenedor_id,estado,observaciones,tipo_mercancia,cajas_packing_list,cajas_en_china,cajas_recibidas_venezuela,cbm_packing_list,cbm_real_china,familia_codigo,etiqueta_padre_id,tiene_subetiquetas,fecha_llegada_china,fecha_salida_china)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NULLIF($15,'')::date,NULLIF($16,'')::date) RETURNING *`,
-      [labelNumber, clientId, containerId, status, b.notes || null, b.cargoType || null, boxesPacking, boxesChina, null, cbmPacking, cbmChina, familyCode, parentId, hasSubs, cleanDate(b.arrivalChina) || '', null]
-    );
+    // Correlativo: si dos etiquetas se crean a la vez y chocan, se toma el siguiente número.
+    const automatico = !parentId;
+    if (automatico) labelNumber = await siguienteCorrelativo();
+    let r;
+    for (let intento = 0; ; intento++) {
+      try {
+        r = await db.query(
+          `INSERT INTO etiquetas(numero,cliente_id,contenedor_id,estado,observaciones,tipo_mercancia,cajas_packing_list,cajas_en_china,cajas_recibidas_venezuela,cbm_packing_list,cbm_real_china,familia_codigo,etiqueta_padre_id,tiene_subetiquetas,fecha_llegada_china,fecha_salida_china)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NULLIF($15,'')::date,NULLIF($16,'')::date) RETURNING *`,
+          [labelNumber, clientId, containerId, status, b.notes || null, b.cargoType || null, boxesPacking, boxesChina, null, cbmPacking, cbmChina, familyCode, parentId, hasSubs, cleanDate(b.arrivalChina) || '', null]
+        );
+        break;
+      } catch (e) {
+        if (e.code !== '23505' || !automatico || intento >= 4) throw e;
+        labelNumber = await siguienteCorrelativo(Number(labelNumber) + 1);
+      }
+    }
+    if (costo !== null) await fijarCostoEtiqueta(r.rows[0], costo);
 
     await fijarAsesoraEtiqueta(r.rows[0], c.rows[0].asesora_id);
     await logAction(req.user.id, `Etiqueta ${labelNumber} agregada`, 'etiquetas', r.rows[0].id, `Se creó la etiqueta ${labelNumber}.`);
@@ -929,6 +975,11 @@ app.put('/api/etiquetas/:id', auth, async (req, res) => {
       [labelNumber, clientId, containerId, status, b.notes || null, !!b.ready, b.cargoType || null, boxesPacking, boxesChina, cbmPacking, cbmChina, familyCode, parentId, hasSubs, id]
     );
 
+    if (b.clientCost !== undefined) {
+      const costoNuevo = costoCliente(b.clientCost);
+      if (costoNuevo === undefined) return res.status(400).json({ error: 'El costo acordado con el cliente debe ser un número en dólares, 0 o mayor' });
+      await fijarCostoEtiqueta(r.rows[0], costoNuevo);
+    }
     // Si la etiqueta pasa a otro cliente, queda con la asesora de ese cliente; si no, conserva la suya.
     if (Number(old.cliente_id) !== Number(clientId)) {
       const nuevo = await db.query('SELECT asesora_id FROM clientes WHERE id=$1', [clientId]);
@@ -1273,6 +1324,7 @@ app.get('/api/admin/backup-csv.zip', auth, async (req, res) => {
 const { authCliente } = appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, auth, intId, logAction });
 // Packing lists que sube el cliente desde la app (la IA los revisa); en el panel ya no hay lector con IA.
 require('./packing-cliente').registrar(app, { db, auth, intId, logAction, authCliente });
+require('./ajustes').registrar(app, { db, auth, logAction });
 facturacion.registrar(app, { db, auth, intId, logAction, JWT_SECRET });
 importador.registrar(app, { db, auth, intId, logAction });
 require('./usuarios').registrar(app, { db, auth, intId, logAction, userOut, getBootstrap });
