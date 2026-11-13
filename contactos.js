@@ -1,6 +1,6 @@
 /**
  * Contactos por asignar (solo administrador): clientes del sistema anterior con solo nombre y teléfono. El administrador
- * elige la asesora de cada uno; al asignarlo se crea como cliente de esa asesora (código correlativo CC-###).
+ * elige la asesora de cada uno; al asignarlo se crea como cliente de esa asesora (código CCCN-G-0001…: sede, origen y tipo por defecto).
  *
  *   GET    /api/contactos?estado=pendiente|asignado|descartado|todos
  *   POST   /api/contactos/cargar    { contactos: [{ nombre, apellido, telefono }] }   (el panel los saca del archivo)

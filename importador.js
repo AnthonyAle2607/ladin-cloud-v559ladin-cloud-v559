@@ -285,7 +285,7 @@ async function importarCliente({ tx, v, fila, falla, r, clientes, clientesPorHue
   const ins = await tx.query(`INSERT INTO clientes(nombre,apellido,telefono,email,empresa,asesora_id,estado_venezuela,fecha_primer_contacto,observaciones,codigo_cliente,estado,cedula) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) RETURNING id`, [...datos, clave ? clave.slice(0, 50) : null, cedula]);
   const id = ins.rows[0].id;
   if (!clave) {
-    const codigo = await asignarCodigoCliente(tx, id, { enTransaccion: true });
+    const codigo = await asignarCodigoCliente(tx, id, null, { enTransaccion: true });
     clientes.set(codigo.toLowerCase(), id);
   } else clientes.set(clave.toLowerCase(), id);
   clientesPorHuella.set(claveHuella, id);

@@ -88,7 +88,18 @@ const loginLimiter = rateLimit({
    UTILIDADES & MAREADORES DE DTO (DATOS DE SALIDA)
    ========================================================================== */
 
-const { siguienteCodigoCliente, asignarCodigoCliente } = require('./codigos');
+const { siguienteCodigoCliente, asignarCodigoCliente, guardarCodigo, partesDeCodigo } = require('./codigos');
+
+/**
+ * El correlativo del código de cliente es único para todos (CCMI-G-0015 y VLCN-T-0015 no pueden convivir). Devuelve el
+ * código del otro cliente que ya lo tiene, o null.
+ */
+async function correlativoOcupado(codigo, exceptoId = 0) {
+  const p = partesDeCodigo(codigo);
+  if (!p) return null;
+  const r = await db.query("SELECT id, codigo_cliente FROM clientes WHERE codigo_cliente LIKE '%-_-%' AND id <> $1", [exceptoId || 0]);
+  return r.rows.find((x) => partesDeCodigo(x.codigo_cliente)?.numero === p.numero)?.codigo_cliente || null;
+}
 
 function intId(v) {
   if (v == null) return null;
@@ -422,7 +433,9 @@ async function ensureSchema() {
 
   // Actualizaciones de códigos por defecto
   await db.query("UPDATE usuarios SET codigo_asesora = 'ASE-' || LPAD(id::text, 3, '0') WHERE rol='asesora' AND (codigo_asesora IS NULL OR BTRIM(codigo_asesora)='')");
-  await db.query('ALTER TABLE clientes ADD COLUMN IF NOT EXISTS codigo_anterior VARCHAR(50)'); // migración 20261115000000
+  await db.query('ALTER TABLE clientes ADD COLUMN IF NOT EXISTS codigo_anterior VARCHAR(50)'); // migración 20261117000000
+  await db.query('ALTER TABLE clientes ADD COLUMN IF NOT EXISTS codigo_numero INTEGER');
+  await db.query('CREATE UNIQUE INDEX IF NOT EXISTS ux_clientes_codigo_numero ON clientes(codigo_numero)');
   for (const c of (await db.query("SELECT id FROM clientes WHERE codigo_cliente IS NULL OR BTRIM(codigo_cliente) = '' ORDER BY id")).rows) await asignarCodigoCliente(db, c.id);
 
   await db.query("ALTER TABLE queja_archivos ADD COLUMN IF NOT EXISTS almacen VARCHAR(10) NOT NULL DEFAULT 'disco'"); // disco | supabase
@@ -610,6 +623,9 @@ app.post('/api/clientes', auth, async (req, res) => {
     // El cliente queda con quien lo registra; para moverlo de cartera está «Reasignar cartera».
     const advisorId = req.user.id;
     if (!b.name) return res.status(400).json({ error: 'El nombre es obligatorio' });
+    const codigoManual = String(b.code || '').trim().toUpperCase();
+    const ocupado = codigoManual && await correlativoOcupado(codigoManual);
+    if (ocupado) return res.status(409).json({ error: `Ese correlativo ya lo tiene el cliente ${ocupado}` });
     if (!advisorId) return res.status(400).json({ error: 'Debes asignar una asesora' });
     const ced = limpiarCedula(b.idNumber);
     if (ced.error) return res.status(400).json({ error: ced.error });
@@ -622,12 +638,13 @@ app.post('/api/clientes', auth, async (req, res) => {
     const r = await db.query(
       `INSERT INTO clientes(codigo_cliente,nombre,apellido,telefono,email,empresa,asesora_id,estado,estado_venezuela,fecha_primer_contacto,observaciones,cedula)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-      [b.code?.trim() || null, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null, ced.valor]
+      [codigoManual || null, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null, ced.valor]
     );
 
     const final = await db.query('SELECT c.*,u.codigo_asesora FROM clientes c LEFT JOIN usuarios u ON u.id=c.asesora_id WHERE c.id=$1', [r.rows[0].id]);
-    // Sin código escrito a mano: el siguiente correlativo CC-###.
-    if (!final.rows[0].codigo_cliente) final.rows[0].codigo_cliente = await asignarCodigoCliente(db, final.rows[0].id);
+    // Sin código escrito a mano: sede + origen + tipo elegidos y el siguiente correlativo (CCCN-G-0001…).
+    if (!final.rows[0].codigo_cliente) final.rows[0].codigo_cliente = await asignarCodigoCliente(db, final.rows[0].id, b.codeParts);
+    else await guardarCodigo(db, final.rows[0].id, final.rows[0].codigo_cliente);
 
     await logAction(req.user.id, `Cliente ${final.rows[0].codigo_cliente} creado`, 'clientes', final.rows[0].id, `Se creó a ${final.rows[0].nombre}${final.rows[0].apellido ? ' ' + final.rows[0].apellido : ''}. Estado: ${final.rows[0].estado}.`);
     res.status(201).json(clientOut(final.rows[0]));
@@ -650,7 +667,9 @@ app.put('/api/clientes/:id', auth, async (req, res) => {
     const parts = String(b.name || '').trim().split(/\s+/);
     const nombre = parts.shift() || '';
     const apellido = parts.join(' ') || null;
-    const code = String(b.code || old.rows[0].codigo_cliente || '').trim() || await siguienteCodigoCliente(db);
+    const code = String(b.code || old.rows[0].codigo_cliente || '').trim().toUpperCase() || await siguienteCodigoCliente(db, b.codeParts);
+    const ocupado = await correlativoOcupado(code, id);
+    if (ocupado) return res.status(409).json({ error: `Ese correlativo ya lo tiene el cliente ${ocupado}` });
     const fc = /^\d{4}-\d{2}-\d{2}$/.test(String(b.firstContactDate || '')) ? String(b.firstContactDate) : null;
 
     // Si quien llama no manda la cédula (otras pantallas), se conserva la que ya tenía en vez de borrarla.
@@ -662,6 +681,7 @@ app.put('/api/clientes/:id', auth, async (req, res) => {
       [code, nombre, apellido, b.phone || null, b.email || null, b.company || null, advisorId, b.status || 'pending', b.state || null, fc, b.notes || null, ced.valor, id]
     );
 
+    await guardarCodigo(db, id, code);
     const final = await db.query('SELECT c.*,u.codigo_asesora FROM clientes c LEFT JOIN usuarios u ON u.id=c.asesora_id WHERE c.id=$1', [id]);
     await logAction(req.user.id, `Cliente ${code} actualizado`, 'clientes', id, `Se actualizaron los datos de ${final.rows[0].nombre}.`);
     res.json(clientOut(final.rows[0]));
