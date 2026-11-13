@@ -7,6 +7,7 @@
  * Solo el administrador. Los códigos de cliente se conservan tal cual vienen (por ejemplo «2-W2089S»).
  * Cada fila se valida por separado: las malas se informan con su número de fila y no frenan a las buenas.
  */
+const { asignarCodigoCliente } = require('./codigos');
 const multer = require('multer');
 const XLSX = require('xlsx');
 
@@ -284,8 +285,7 @@ async function importarCliente({ tx, v, fila, falla, r, clientes, clientesPorHue
   const ins = await tx.query(`INSERT INTO clientes(nombre,apellido,telefono,email,empresa,asesora_id,estado_venezuela,fecha_primer_contacto,observaciones,codigo_cliente,estado,cedula) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) RETURNING id`, [...datos, clave ? clave.slice(0, 50) : null, cedula]);
   const id = ins.rows[0].id;
   if (!clave) {
-    const codigo = `LC-CLI-${String(id).padStart(6, '0')}`;
-    await tx.query('UPDATE clientes SET codigo_cliente=$1 WHERE id=$2', [codigo, id]);
+    const codigo = await asignarCodigoCliente(tx, id, { enTransaccion: true });
     clientes.set(codigo.toLowerCase(), id);
   } else clientes.set(clave.toLowerCase(), id);
   clientesPorHuella.set(claveHuella, id);

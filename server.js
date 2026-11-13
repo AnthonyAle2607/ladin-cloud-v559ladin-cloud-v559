@@ -88,6 +88,8 @@ const loginLimiter = rateLimit({
    UTILIDADES & MAREADORES DE DTO (DATOS DE SALIDA)
    ========================================================================== */
 
+const { siguienteCodigoCliente, asignarCodigoCliente } = require('./codigos');
+
 function intId(v) {
   if (v == null) return null;
   const s = String(v).trim().replace(/^[a-z]+/i, '');
@@ -420,7 +422,8 @@ async function ensureSchema() {
 
   // Actualizaciones de códigos por defecto
   await db.query("UPDATE usuarios SET codigo_asesora = 'ASE-' || LPAD(id::text, 3, '0') WHERE rol='asesora' AND (codigo_asesora IS NULL OR BTRIM(codigo_asesora)='')");
-  await db.query("UPDATE clientes SET codigo_cliente = 'LC-CLI-' || LPAD(id::text, 6, '0') WHERE codigo_cliente IS NULL OR BTRIM(codigo_cliente) = ''");
+  await db.query('ALTER TABLE clientes ADD COLUMN IF NOT EXISTS codigo_anterior VARCHAR(50)'); // migración 20261115000000
+  for (const c of (await db.query("SELECT id FROM clientes WHERE codigo_cliente IS NULL OR BTRIM(codigo_cliente) = '' ORDER BY id")).rows) await asignarCodigoCliente(db, c.id);
 
   await db.query("ALTER TABLE queja_archivos ADD COLUMN IF NOT EXISTS almacen VARCHAR(10) NOT NULL DEFAULT 'disco'"); // disco | supabase
 
@@ -622,11 +625,8 @@ app.post('/api/clientes', auth, async (req, res) => {
     );
 
     const final = await db.query('SELECT c.*,u.codigo_asesora FROM clientes c LEFT JOIN usuarios u ON u.id=c.asesora_id WHERE c.id=$1', [r.rows[0].id]);
-    if (!final.rows[0].codigo_cliente) {
-      const code = `LC-CLI-${String(final.rows[0].id).padStart(6, '0')}`;
-      await db.query('UPDATE clientes SET codigo_cliente=$1 WHERE id=$2', [code, final.rows[0].id]);
-      final.rows[0].codigo_cliente = code;
-    }
+    // Sin código escrito a mano: el siguiente correlativo CC-###.
+    if (!final.rows[0].codigo_cliente) final.rows[0].codigo_cliente = await asignarCodigoCliente(db, final.rows[0].id);
 
     await logAction(req.user.id, `Cliente ${final.rows[0].codigo_cliente} creado`, 'clientes', final.rows[0].id, `Se creó a ${final.rows[0].nombre}${final.rows[0].apellido ? ' ' + final.rows[0].apellido : ''}. Estado: ${final.rows[0].estado}.`);
     res.status(201).json(clientOut(final.rows[0]));
@@ -649,7 +649,7 @@ app.put('/api/clientes/:id', auth, async (req, res) => {
     const parts = String(b.name || '').trim().split(/\s+/);
     const nombre = parts.shift() || '';
     const apellido = parts.join(' ') || null;
-    const code = (b.code || old.rows[0].codigo_cliente || `LC-CLI-${String(id).padStart(6, '0')}`).trim();
+    const code = String(b.code || old.rows[0].codigo_cliente || '').trim() || await siguienteCodigoCliente(db);
     const fc = /^\d{4}-\d{2}-\d{2}$/.test(String(b.firstContactDate || '')) ? String(b.firstContactDate) : null;
 
     // Si quien llama no manda la cédula (otras pantallas), se conserva la que ya tenía en vez de borrarla.

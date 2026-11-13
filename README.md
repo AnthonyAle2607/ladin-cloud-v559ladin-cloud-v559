@@ -27,7 +27,7 @@ Arquitectura completa en [docs/ARQUITECTURA-WEB.md](docs/ARQUITECTURA-WEB.md). L
 
 ## API de la app móvil de clientes (Caribe Cargo)
 
-Código en `app-movil.js`. Los clientes entran con su **código de cliente** (`LC-CLI-000001`) y una **clave** que define el personal; su token (`typ: cliente`) solo sirve en `/api/app/*`, y el token del personal no sirve ahí.
+Código en `app-movil.js`. Los clientes entran con su **código de cliente** (`CC-001`; también sirve su código anterior) y una **clave** que define el personal; su token (`typ: cliente`) solo sirve en `/api/app/*`, y el token del personal no sirve ahí.
 
 **Rutas de la app** (con `Authorization: Bearer <token>`; cada consulta se limita al cliente de la sesión):
 `POST /api/app/login` · `GET /api/app/version` · `GET /api/app/perfil` · `GET /api/app/etiquetas` · `GET /api/app/etiquetas/:id` · `GET /api/app/fotos/:id` · `GET /api/app/avisos` · `GET|PUT /api/app/preferencias` · `POST /api/app/dispositivos`

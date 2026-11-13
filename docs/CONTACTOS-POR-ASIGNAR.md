@@ -12,7 +12,7 @@ con **solo nombre, apellido y teléfono**. No se trae nada más: ni código viej
 1. «Cargar archivo» → elegir el respaldo `.sql` del sistema anterior (o un CSV con columnas nombre, apellido, teléfono).
    El archivo se lee en el navegador; al servidor solo viajan nombre, apellido y teléfono. Los datos no quedan en el código.
 2. En cada contacto, elegir la asesora en «Asignar a»: en ese momento se crea como cliente de esa asesora, con código
-   `LC-CLI-…` y estado pendiente.
+   correlativo `CC-###` y estado pendiente.
 3. Para varios a la vez: marcarlos, elegir la asesora en «Asignar marcados a…» y «Asignar marcados».
 4. «Descartar» los que no sirvan (se pueden recuperar en la pestaña Descartados).
 
