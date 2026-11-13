@@ -163,7 +163,7 @@
       </div>
       <div class="fx-box"><h3>3. Mercancía</h3>
         <div id="fxPendientes" class="fx-muted">Elige un cliente para ver sus etiquetas sin facturar.</div>
-        <div class="fx-scroll"><table class="fx-lines"><thead><tr><th>Descripción</th><th>Cajas</th><th>CBM</th><th>Peso kg</th><th>$/CBM</th><th>Vol. terrestre</th><th>$/CBM terr.</th><th>Extra $</th><th class="fx-num">Monto</th><th></th></tr></thead><tbody id="fxLineas"></tbody></table></div>
+        <div class="fx-scroll"><table class="fx-lines"><thead><tr><th>Descripción</th><th>Cajas</th><th>CBM</th><th>Peso kg</th><th>$/CBM</th><th title="Costo total acordado con el cliente. Si lo llenas, reemplaza CBM × $/CBM.">Acordado $</th><th>Vol. terrestre</th><th>$/CBM terr.</th><th>Extra $</th><th class="fx-num">Monto</th><th></th></tr></thead><tbody id="fxLineas"></tbody></table></div>
         <div class="row" style="margin-top:8px"><button class="btn btn-secondary btn-sm" id="fxAgregar" type="button">+ Línea manual</button></div>
         <div class="fx-total"><span>Total</span><b id="fxTotal">$0.00</b></div>
       </div>
@@ -172,14 +172,16 @@
       '<button class="btn btn-secondary" id="modalCancel">Cancelar</button><button class="btn btn-primary" id="fxEmitir">Emitir factura</button>');
     $('modalCancel').onclick = closeModal;
 
-    const monto = (l) => r2(num(l.cbm) * num(l.seaRate) + num(l.landVolume) * num(l.landRate) + num(l.extra));
+    // Flete: el costo acordado con el cliente si lo hay; si no, CBM × $/CBM.
+    const acordado = (l) => l.agreedAmount !== '' && l.agreedAmount != null && Number.isFinite(Number(l.agreedAmount));
+    const monto = (l) => r2((acordado(l) ? num(l.agreedAmount) : num(l.cbm) * num(l.seaRate)) + num(l.landVolume) * num(l.landRate) + num(l.extra));
     const total = () => r2(lineas.reduce((s, l) => s + monto(l), 0));
 
     function pintarLineas() {
       $('fxLineas').innerHTML = lineas.map((l, i) => {
         const inp = (k, cls = '', tipo = 'number') => `<td><input class="${cls}" data-i="${i}" data-k="${k}" type="${tipo}" ${tipo === 'number' ? 'min="0" step="any"' : 'maxlength="250"'} value="${esc(l[k] ?? '')}"></td>`;
-        return `<tr>${inp('description', 'fx-desc', 'text')}${inp('boxes')}${inp('cbm')}${inp('weight')}${inp('seaRate')}${inp('landVolume')}${inp('landRate')}${inp('extra')}<td class="fx-monto" id="fxM${i}">${usd(monto(l))}</td><td><button class="btn btn-secondary btn-sm" data-quitar="${i}" type="button" aria-label="Quitar línea">×</button></td></tr>`;
-      }).join('') || '<tr><td colspan="10"><div class="empty compact">Agrega etiquetas pendientes o una línea manual.</div></td></tr>';
+        return `<tr>${inp('description', 'fx-desc', 'text')}${inp('boxes')}${inp('cbm')}${inp('weight')}${inp('seaRate')}${inp('agreedAmount')}${inp('landVolume')}${inp('landRate')}${inp('extra')}<td class="fx-monto" id="fxM${i}">${usd(monto(l))}</td><td><button class="btn btn-secondary btn-sm" data-quitar="${i}" type="button" aria-label="Quitar línea">×</button></td></tr>`;
+      }).join('') || '<tr><td colspan="11"><div class="empty compact">Agrega etiquetas pendientes o una línea manual.</div></td></tr>';
       $('fxTotal').textContent = usd(total());
       document.querySelectorAll('#fxLineas input').forEach((el) => (el.oninput = () => {
         lineas[+el.dataset.i][el.dataset.k] = el.value;
@@ -192,11 +194,11 @@
     function pintarPendientes() {
       const usadas = new Set(lineas.map((l) => l.labelId).filter(Boolean));
       $('fxPendientes').innerHTML = pendientes.length
-        ? `<div class="fx-muted">Etiquetas sin facturar (toca para agregar):</div><div class="fx-chips">${pendientes.map((p) => `<button type="button" class="fx-chip" data-add="${esc(p.labelId)}" ${usadas.has(p.labelId) ? 'disabled' : ''}>${esc(p.number)} · ${esc(p.description)} · ${p.cbm} CBM</button>`).join('')}</div>`
+        ? `<div class="fx-muted">Etiquetas sin facturar (toca para agregar):</div><div class="fx-chips">${pendientes.map((p) => `<button type="button" class="fx-chip" data-add="${esc(p.labelId)}" ${usadas.has(p.labelId) ? 'disabled' : ''}>${esc(p.number)} · ${esc(p.description)} · ${p.cbm} CBM${p.agreedAmount != null ? ` · acordado ${usd(p.agreedAmount)}` : ''}</button>`).join('')}</div>`
         : 'Este cliente no tiene etiquetas pendientes de facturar.';
       document.querySelectorAll('[data-add]').forEach((b) => (b.onclick = () => {
         const p = pendientes.find((x) => x.labelId === b.dataset.add);
-        if (p) lineas.push({ labelId: p.labelId, description: p.description, boxes: p.boxes, cbm: p.cbm, weight: '', seaRate: p.seaRate, landVolume: '', landRate: '', extra: '' });
+        if (p) lineas.push({ labelId: p.labelId, description: p.description, boxes: p.boxes, cbm: p.cbm, weight: '', seaRate: p.seaRate, agreedAmount: p.agreedAmount ?? '', landVolume: '', landRate: '', extra: '' });
         pintarLineas(); pintarPendientes();
       }));
     }
@@ -210,7 +212,7 @@
       try { pendientes = await api(`/api/facturas/pendientes/${encodeURIComponent(e.target.value)}`); } catch (err) { aviso(err.message); }
       pintarPendientes();
     };
-    $('fxAgregar').onclick = () => { lineas.push({ labelId: '', description: '', boxes: '', cbm: '', weight: '', seaRate: 660, landVolume: '', landRate: '', extra: '' }); pintarLineas(); };
+    $('fxAgregar').onclick = () => { lineas.push({ labelId: '', description: '', boxes: '', cbm: '', weight: '', seaRate: 660, agreedAmount: '', landVolume: '', landRate: '', extra: '' }); pintarLineas(); };
 
     $('fxEmitir').onclick = async () => {
       const clientId = $('fxCliente').value;
@@ -253,7 +255,7 @@
         ${f.notes ? `<p class="fx-muted" style="margin:8px 0 0">${esc(f.notes)}</p>` : ''}
       </div>
       <div class="fx-scroll"><table class="table"><thead><tr><th>Descripción</th><th class="fx-num">Cajas</th><th class="fx-num">CBM</th><th class="fx-num">$/CBM</th><th class="fx-num">Terrestre</th><th class="fx-num">Extra</th><th class="fx-num">Monto</th></tr></thead><tbody>
-        ${f.items.map((i) => `<tr><td>${esc(i.description)}</td><td class="fx-num">${i.boxes}</td><td class="fx-num">${i.cbm.toFixed(3)}</td><td class="fx-num">${usd(i.seaRate)}</td><td class="fx-num">${i.landVolume ? `${i.landVolume} × ${usd(i.landRate)}` : '—'}</td><td class="fx-num">${i.extra ? usd(i.extra) : '—'}</td><td class="fx-num"><b>${usd(i.amount)}</b></td></tr>`).join('')}
+        ${f.items.map((i) => `<tr><td>${esc(i.description)}</td><td class="fx-num">${i.boxes}</td><td class="fx-num">${i.cbm.toFixed(3)}</td><td class="fx-num">${i.agreedAmount != null ? `${usd(i.agreedAmount)} <small class="fx-muted">acordado</small>` : usd(i.seaRate)}</td><td class="fx-num">${i.landVolume ? `${i.landVolume} × ${usd(i.landRate)}` : '—'}</td><td class="fx-num">${i.extra ? usd(i.extra) : '—'}</td><td class="fx-num"><b>${usd(i.amount)}</b></td></tr>`).join('')}
       </tbody></table></div>
       <div class="fx-total"><span>Total</span><b>${usd(f.total)}</b></div>
       <div class="fx-total" style="font-size:16px"><span>Pagado ${usd(f.paid)} · Saldo</span><b style="font-size:24px">${usd(f.balance)}</b></div>
@@ -380,7 +382,9 @@
     if (!alCambiar('commissions')) return;
 
     const t = datos.totals;
-    const textoRegla = (tipo, valor) => (tipo === 'fijo_cbm' ? `${usd(valor)} por CBM` : `${valor} % ${tipo === 'porcentaje_flete' ? 'del flete marítimo' : 'del total de la factura'}`);
+    const textoRegla = (tipo, valor, base) => (tipo === 'fijo_cbm' ? `${usd(valor)} por CBM`
+      : tipo === 'porcentaje_tarifa_base' ? `${valor} % de una tarifa base${base ? ` de ${usd(base)}` : ''} por CBM`
+      : `${valor} % ${tipo === 'porcentaje_flete' ? 'del flete marítimo' : 'del total de la factura'}`);
     const asesoras = db.users.filter((u) => u.role === 'asesora' && u.active);
 
     const kpis = `<div class="fx-kpis">
@@ -388,7 +392,7 @@
       <div class="fx-kpi"><span>Pendientes de pago</span><b>${usd(t.pending)}</b></div>
       <div class="fx-kpi"><span>Pagadas</span><b>${usd(t.paid)}</b></div></div>`;
 
-    const reglaAsesor = !admin && datos.rule ? `<div class="fx-box"><h3>Tu regla de comisión</h3><p style="margin:0">${datos.rule.valor > 0 ? esc(textoRegla(datos.rule.tipo, datos.rule.valor)) : 'Todavía no tienes una comisión definida; la define el administrador.'}</p></div>` : '';
+    const reglaAsesor = !admin && datos.rule ? `<div class="fx-box"><h3>Tu regla de comisión</h3><p style="margin:0">${datos.rule.valor > 0 ? esc(textoRegla(datos.rule.tipo, datos.rule.valor, datos.rule.tarifaBase)) : 'Todavía no tienes una comisión definida; la define el administrador.'}</p></div>` : '';
 
     const porCliente = `<div class="card section"><h3 style="margin-top:0">${admin ? 'Por cliente' : 'Mis comisiones por cliente'}</h3><div class="table-wrap fx-scroll"><table class="table"><thead><tr><th>Cliente</th><th class="fx-num">Facturas</th><th class="fx-num">Facturado</th><th class="fx-num">Comisión generada</th><th class="fx-num">Pendiente</th><th class="fx-num">Pagada</th></tr></thead><tbody>
       ${datos.byClient.length ? datos.byClient.map((c) => `<tr><td><span class="code-pill">${esc(c.clientCode || '—')}</span> <b>${esc(c.clientName || 'Sin cliente')}</b></td><td class="fx-num">${c.invoices}</td><td class="fx-num">${usd(c.billed)}</td><td class="fx-num"><b>${usd(c.generated)}</b></td><td class="fx-num">${usd(c.pending)}</td><td class="fx-num">${usd(c.paid)}</td></tr>`).join('') : '<tr><td colspan="6"><div class="empty compact">Aún no hay comisiones generadas.</div></td></tr>'}
@@ -402,8 +406,8 @@
       const propias = new Map(reglas.advisors.map((r) => [r.advisorId, r]));
       return `<div class="fx-box"><h3>Reglas de comisión</h3>
         <p class="fx-muted" style="margin:0 0 8px">${reglas.global.unset ? '<span class="fx-warn"><b>Sin definir:</b> hasta que configures una regla, las comisiones se generan en $0.00.</span> ' : ''}La regla global se aplica a los asesores que no tengan una propia. Se aplica al emitir cada factura.</p>
-        <div class="fx-rule-row"><span><b>Global:</b> ${esc(textoRegla(reglas.global.type, reglas.global.value))}</span><button class="btn btn-secondary btn-sm" data-regla="">Cambiar</button></div>
-        ${asesoras.map((u) => { const r = propias.get(u.id); return `<div class="fx-rule-row"><span>${esc(u.name)}${u.advisorCode ? ` <span class="code-pill">${esc(u.advisorCode)}</span>` : ''}: ${r ? esc(textoRegla(r.type, r.value)) : '<span class="fx-muted">usa la global</span>'}</span><button class="btn btn-secondary btn-sm" data-regla="${esc(u.id)}">${r ? 'Cambiar' : 'Regla propia'}</button></div>`; }).join('')}
+        <div class="fx-rule-row"><span><b>Global:</b> ${esc(textoRegla(reglas.global.type, reglas.global.value, reglas.global.baseRate))}</span><button class="btn btn-secondary btn-sm" data-regla="">Cambiar</button></div>
+        ${asesoras.map((u) => { const r = propias.get(u.id); return `<div class="fx-rule-row"><span>${esc(u.name)}${u.advisorCode ? ` <span class="code-pill">${esc(u.advisorCode)}</span>` : ''}: ${r ? esc(textoRegla(r.type, r.value, r.baseRate || reglas.global.baseRate)) : '<span class="fx-muted">usa la global</span>'}</span><button class="btn btn-secondary btn-sm" data-regla="${esc(u.id)}">${r ? 'Cambiar' : 'Regla propia'}</button></div>`; }).join('')}
         <div class="row" style="margin-top:10px"><button class="btn btn-secondary btn-sm" id="comRecalcular">Recalcular pendientes con las reglas actuales</button></div></div>`;
     })() : '';
 
@@ -468,14 +472,21 @@
     openModal(`Regla de comisión · ${esc(nombre)}`, `
       ${selectField('rgTipo', '¿Cómo se calcula?', Object.entries(reglas.types), actual.type)}
       ${field('rgValor', 'Valor', actual.value, 'number', 'min="0" step="0.01"')}
+      <div id="rgBaseCaja">${field('rgBase', 'Tarifa base por CBM (USD)', actual.baseRate ?? '', 'number', `min="0" step="0.01" placeholder="${global ? 'Ej.: 500' : 'Vacío = la de la regla global'}"`)}</div>
       <small class="fx-muted" id="rgAyuda"></small>
       <p class="fx-muted">Se aplica a las facturas que se emitan desde ahora. Para las ya emitidas y pendientes de pago, usa «Recalcular pendientes».</p>`,
       `<button class="btn btn-secondary" id="modalCancel">Cancelar</button>${!global && reglas.advisors.some((r) => r.advisorId === asesoraId) ? '<button class="btn btn-secondary" id="rgQuitar">Quitar regla propia</button>' : ''}<button class="btn btn-primary" id="rgGuardar">Guardar</button>`);
     $('modalCancel').onclick = closeModal;
-    const ayuda = () => { $('rgAyuda').textContent = $('rgTipo').value === 'fijo_cbm' ? 'Valor en dólares por cada m³ (CBM).' : 'Valor en porcentaje (0 a 100).'; };
+    const ayuda = () => {
+      const t = $('rgTipo').value;
+      $('rgBaseCaja').style.display = t === 'porcentaje_tarifa_base' ? '' : 'none';
+      $('rgAyuda').textContent = t === 'fijo_cbm' ? 'Valor en dólares por cada m³ (CBM).'
+        : t === 'porcentaje_tarifa_base' ? 'Porcentaje (0 a 100) que se aplica a CBM × tarifa base. La tarifa base debe ser menor que la tarifa marítima que se cobra al cliente.'
+        : 'Valor en porcentaje (0 a 100).';
+    };
     $('rgTipo').onchange = ayuda; ayuda();
     $('rgGuardar').onclick = async () => {
-      try { await api('/api/comisiones/reglas', { method: 'PUT', body: JSON.stringify({ type: $('rgTipo').value, value: $('rgValor').value, advisorId: asesoraId || null }) }); closeModal(); aviso('Regla guardada'); mostrarComisiones(); } catch (e) { aviso(e.message); }
+      try { await api('/api/comisiones/reglas', { method: 'PUT', body: JSON.stringify({ type: $('rgTipo').value, value: $('rgValor').value, baseRate: $('rgTipo').value === 'porcentaje_tarifa_base' ? $('rgBase').value : null, advisorId: asesoraId || null }) }); closeModal(); aviso('Regla guardada'); mostrarComisiones(); } catch (e) { aviso(e.message); }
     };
     $('rgQuitar')?.addEventListener('click', async () => {
       try { await api(`/api/comisiones/reglas/${encodeURIComponent(asesoraId)}`, { method: 'DELETE' }); closeModal(); aviso('Ahora usa la regla global'); mostrarComisiones(); } catch (e) { aviso(e.message); }
@@ -669,6 +680,7 @@ Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo c
     const cuerpo = document.querySelector('#modal .modal-body');
     if (!cuerpo) return;
     ponerAsesoraEtiqueta(cuerpo, existing);
+    ponerNumeroYCosto(cuerpo, existing);
     if (!existing || !isAdmin()) return;
     cuerpo.insertAdjacentHTML('beforeend', '<div class="fx-box" id="fxApp" style="margin-top:14px"><h3>Lotes y fotos (app del cliente)</h3><span class="fx-muted">Cargando…</span></div>');
     cargarAppEtiqueta(existing);
@@ -687,6 +699,26 @@ Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo c
     const html = `<p id="fxAsesoraEtq" style="margin:0 0 10px;font-size:14px">${texto}</p>`;
     const intro = cuerpo.querySelector('.modal-intro');
     if (intro) intro.insertAdjacentHTML('afterend', html); else cuerpo.insertAdjacentHTML('afterbegin', html);
+  }
+
+  /**
+   * Número y costo de la etiqueta:
+   *  - El número de una etiqueta nueva lo asigna el sistema al guardar (correlativo 0001, 0002…); no se escribe a mano.
+   *  - «Costo acordado con el cliente»: el total en USD que la asesora le dio al cliente. Llena la factura y la comisión.
+   */
+  function ponerNumeroYCosto(cuerpo, etq) {
+    const numero = $('mNumber');
+    if (numero && !etq) {
+      numero.value = '';
+      numero.readOnly = true;
+      numero.placeholder = 'Se asigna solo al guardar';
+      numero.title = 'El número es correlativo: lo pone el sistema al crear la etiqueta.';
+    }
+    const html = `<div class="fx-box" id="fxCostoEtq" style="margin:0 0 12px"><div class="fx-grid">${field('mClientCost', 'Costo acordado con el cliente (USD)', etq?.clientCost ?? '', 'number', 'min="0" step="0.01" placeholder="Ej.: 1240"')}</div>
+      <small class="fx-muted">El total que le diste al cliente por esta carga. Con él se llena la factura y se calcula la comisión.</small></div>`;
+    const asesora = $('fxAsesoraEtq');
+    if (asesora) asesora.insertAdjacentHTML('afterend', html);
+    else (cuerpo.querySelector('.modal-intro') || cuerpo).insertAdjacentHTML(cuerpo.querySelector('.modal-intro') ? 'afterend' : 'afterbegin', html);
   }
 
   async function cargarAppEtiqueta(etq) {
