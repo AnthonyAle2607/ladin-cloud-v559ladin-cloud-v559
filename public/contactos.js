@@ -139,8 +139,19 @@
     $('ctBuscar').oninput = (e) => { busqueda = e.target.value; const pos = e.target.selectionStart; pintar(); const n = $('ctBuscar'); n.focus(); n.setSelectionRange(pos, pos); };
     const contar = () => { const n = $('ctN'); if (n) n.textContent = marcados.size; };
     document.querySelectorAll('[data-ct-marca]').forEach((c) => {
+      const fila = c.closest('tr');
       c.checked = marcados.has(c.dataset.ctMarca);
-      c.onchange = () => { c.checked ? marcados.add(c.dataset.ctMarca) : marcados.delete(c.dataset.ctMarca); contar(); };
+      const resaltar = () => fila.querySelectorAll('td').forEach((td) => { td.style.backgroundColor = c.checked ? 'rgba(234,179,8,0.18)' : ''; });
+      c.onchange = () => { c.checked ? marcados.add(c.dataset.ctMarca) : marcados.delete(c.dataset.ctMarca); resaltar(); contar(); };
+      resaltar();
+      // Tocar cualquier parte de la fila marca o desmarca el contacto (menos la lista de asesoras y los botones).
+      fila.style.cursor = 'pointer';
+      fila.style.userSelect = 'none';
+      fila.onclick = (e) => {
+        if (e.target.closest('select, button, input, a, label')) return;
+        c.checked = !c.checked;
+        c.onchange();
+      };
     });
     $('ctTodos')?.addEventListener('change', (e) => { document.querySelectorAll('[data-ct-marca]').forEach((c) => { c.checked = e.target.checked; c.onchange(); }); });
     contar();
