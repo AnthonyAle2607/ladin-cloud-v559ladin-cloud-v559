@@ -2,7 +2,7 @@
  * Etiqueta PNG con el formato del almacén de Yiwu: la imagen que la asesora le manda al cliente para que su proveedor
  * la pegue en las cajas.
  *
- *  - Datos fijos (responsables y teléfonos, dirección, 区域, 业务): GET /api/ajustes/etiqueta-almacen; el administrador los
+ *  - Datos fijos (responsables y teléfonos, dirección, 区域 = área; 1 es Caracas): GET /api/ajustes/etiqueta-almacen; el administrador los
  *    cambia con PUT desde el mismo modal.
  *  - Datos de la etiqueta: 客服编号 = código del asesor, 客户编号 = código del cliente, 单据编号 = número de etiqueta,
  *    箱数 = cajas, 名称 = mercancía. Cajas y mercancía se pueden ajustar antes de descargar.
@@ -83,7 +83,7 @@
     filas.push({ k: '单据编号\nN.º etiqueta', v: v.numero || '—', h: 170, tam: 110 });
     filas.push({ k: '箱数\nCajas', v: v.cajas ? `${v.cajas} 箱` : '—', h: 150, tam: 84 });
     filas.push({ k: '名称\nMercancía', v: v.mercancia || '—', h: 170, tam: 60, lineas: 2 });
-    filas.push({ doble: true, a: ['区域\nÁrea', f.area || '—'], b: ['业务(VE)\nNegocio', f.negocio || '—'], h: 150 });
+    filas.push({ k: '区域\nÁrea', v: f.area || '—', h: 150, tam: 84 });
 
     // Encabezado
     ctx.font = `800 64px ${FUENTE}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -98,18 +98,9 @@
     const yTabla = y;
     for (const fila of filas) {
       ctx.lineWidth = 3;
-      if (fila.doble) {
-        const mitad = ancho / 2, kw2 = 220;
-        [[fila.a, x0], [fila.b, x0 + mitad]].forEach(([[k, val], xx]) => {
-          ctx.strokeRect(xx, y, kw2, fila.h); ctx.strokeRect(xx + kw2, y, mitad - kw2, fila.h);
-          textoEnCaja(ctx, k, xx, y, kw2, fila.h, { tam: 34, peso: '700', lineasMax: 2 });
-          textoEnCaja(ctx, val, xx + kw2, y, mitad - kw2, fila.h, { tam: 84, lineasMax: 1 });
-        });
-      } else {
-        ctx.strokeRect(x0, y, kw, fila.h); ctx.strokeRect(x0 + kw, y, ancho - kw, fila.h);
-        textoEnCaja(ctx, fila.k, x0, y, kw, fila.h, { tam: 36, peso: '700', lineasMax: 2 });
-        textoEnCaja(ctx, fila.v, x0 + kw, y, ancho - kw, fila.h, { tam: fila.tam, lineasMax: fila.lineas || 1 });
-      }
+      ctx.strokeRect(x0, y, kw, fila.h); ctx.strokeRect(x0 + kw, y, ancho - kw, fila.h);
+      textoEnCaja(ctx, fila.k, x0, y, kw, fila.h, { tam: 36, peso: '700', lineasMax: 2 });
+      textoEnCaja(ctx, fila.v, x0 + kw, y, ancho - kw, fila.h, { tam: fila.tam, lineasMax: fila.lineas || 1 });
       y += fila.h;
     }
     ctx.lineWidth = 6; ctx.strokeRect(x0, yTabla, ancho, y - yTabla);
@@ -169,8 +160,7 @@
       <div class="field"><label for="efResp">收货人 · Responsables (uno por línea: nombre y teléfono)</label><textarea id="efResp" rows="4">${esc(resp)}</textarea></div>
       <div class="field"><label for="efDir">地址 · Dirección del almacén</label><textarea id="efDir" rows="2" maxlength="300">${esc(f.direccion || '')}</textarea></div>
       <div class="fx-grid">
-        <div class="field"><label for="efArea">区域 · Área</label><input id="efArea" maxlength="30" value="${esc(f.area || '')}"></div>
-        <div class="field"><label for="efNeg">业务(VE) · Negocio</label><input id="efNeg" maxlength="30" value="${esc(f.negocio || '')}"></div>
+        <div class="field"><label for="efArea">区域 · Área (1 = Caracas)</label><input id="efArea" maxlength="30" value="${esc(f.area || '')}"></div>
         <div class="field"><label for="efGuias">票数 · Guías</label><input id="efGuias" maxlength="10" value="${esc(f.guias || '')}"></div>
       </div>
       <div class="field"><label for="efNota">Nota al pie</label><textarea id="efNota" rows="3" maxlength="400">${esc(f.nota || '')}</textarea></div>`,
@@ -182,7 +172,7 @@
         return m ? { nombre: m[1].trim(), telefono: m[2].replace(/\s+/g, '') } : { nombre: x, telefono: '' };
       });
       try {
-        fijos = await api('/api/ajustes/etiqueta-almacen', { method: 'PUT', body: JSON.stringify({ responsables, direccion: $('efDir').value, area: $('efArea').value, negocio: $('efNeg').value, guias: $('efGuias').value, nota: $('efNota').value }) });
+        fijos = await api('/api/ajustes/etiqueta-almacen', { method: 'PUT', body: JSON.stringify({ responsables, direccion: $('efDir').value, area: $('efArea').value, guias: $('efGuias').value, nota: $('efNota').value }) });
         toast('Datos del almacén guardados');
         abrir(l);
       } catch (e) { toast(e.message); }

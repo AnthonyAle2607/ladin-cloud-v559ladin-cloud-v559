@@ -14,8 +14,7 @@ const ETIQUETA_POR_DEFECTO = {
     { nombre: '余生', telefono: '13432299909' },
   ],
   direccion: '浙江省义乌市福田宗宅5区15栋1单元，导航（顺风外贸部）',
-  area: '2-0',
-  negocio: '2-24',
+  area: '1', // 1 = Caracas
   guias: '1',
   nota: '因英文翻译有差异供应商根据交货产品的实际箱数和实际名称自行修改，此标签贴上外',
 };
@@ -29,7 +28,9 @@ async function ensureSchema(db) {
 async function leerEtiqueta(db) {
   try {
     const r = (await db.query('SELECT valor FROM ajustes WHERE clave=$1', [CLAVE])).rows[0];
-    return r?.valor ? { ...ETIQUETA_POR_DEFECTO, ...JSON.parse(r.valor) } : { ...ETIQUETA_POR_DEFECTO };
+    if (!r?.valor) return { ...ETIQUETA_POR_DEFECTO };
+    const { negocio, ...guardado } = JSON.parse(r.valor); // «Negocio» (业务) ya no se usa: repetía el código del asesor
+    return { ...ETIQUETA_POR_DEFECTO, ...guardado };
   } catch {
     return { ...ETIQUETA_POR_DEFECTO }; // sin la tabla (migración 20261113000000): los valores por defecto
   }
@@ -48,7 +49,7 @@ function registrar(app, { db, auth, logAction }) {
         .map((x) => ({ nombre: texto(x?.nombre, 40), telefono: texto(x?.telefono, 30) }))
         .filter((x) => x.nombre || x.telefono)
         .slice(0, 6);
-      const datos = { responsables, direccion: texto(b.direccion, 300), area: texto(b.area, 30), negocio: texto(b.negocio, 30), guias: texto(b.guias, 10) || '1', nota: texto(b.nota, 400) };
+      const datos = { responsables, direccion: texto(b.direccion, 300), area: texto(b.area, 30), guias: texto(b.guias, 10) || '1', nota: texto(b.nota, 400) };
       if (!datos.direccion) return res.status(400).json({ error: 'La dirección del almacén es obligatoria' });
       const valor = JSON.stringify(datos);
       const upd = await db.query('UPDATE ajustes SET valor=$1, actualizado_en=CURRENT_TIMESTAMP WHERE clave=$2', [valor, CLAVE]);

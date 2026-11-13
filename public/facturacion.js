@@ -680,7 +680,7 @@ Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo c
     const cuerpo = document.querySelector('#modal .modal-body');
     if (!cuerpo) return;
     ponerAsesoraEtiqueta(cuerpo, existing);
-    ponerNumeroYCosto(cuerpo, existing);
+    ponerNumeroYCosto(cuerpo, existing, presetParentId);
     if (!existing || !isAdmin()) return;
     cuerpo.insertAdjacentHTML('beforeend', '<div class="fx-box" id="fxApp" style="margin-top:14px"><h3>Lotes y fotos (app del cliente)</h3><span class="fx-muted">Cargando…</span></div>');
     cargarAppEtiqueta(existing);
@@ -703,16 +703,66 @@ Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo c
 
   /**
    * Número y costo de la etiqueta:
-   *  - El número de una etiqueta nueva lo asigna el sistema al guardar (correlativo 0001, 0002…); no se escribe a mano.
+   *  - El número de una etiqueta nueva es correlativo (00001, 00002…) y no se escribe a mano. Al abrir el formulario se
+   *    reserva el siguiente para quien lo abrió durante 5 minutos (nadie más lo recibe). Si no guarda a tiempo, la reserva
+   *    vence y al guardar se le asigna el siguiente libre. La subetiqueta toma el número de la principal (00001-1…).
    *  - «Costo acordado con el cliente»: el total en USD que la asesora le dio al cliente. Llena la factura y la comisión.
    */
-  function ponerNumeroYCosto(cuerpo, etq) {
+  const reservaEtq = { timer: null, activa: false };
+  function soltarReserva() {
+    clearInterval(reservaEtq.timer);
+    reservaEtq.timer = null;
+    if (!reservaEtq.activa) return;
+    reservaEtq.activa = false;
+    api('/api/etiquetas/reservar-numero', { method: 'DELETE' }).catch(() => {});
+  }
+  const cerrarOriginal = window.closeModal;
+  window.closeModal = function () { soltarReserva(); return cerrarOriginal.apply(this, arguments); };
+
+  async function reservarNumero() {
+    const numero = $('mNumber'), aviso = $('fxReservaEtq');
+    if (!numero || !aviso) return;
+    clearInterval(reservaEtq.timer);
+    aviso.innerHTML = 'Reservando el número…';
+    let r;
+    try { r = await api('/api/etiquetas/reservar-numero', { method: 'POST' }); } catch (e) {
+      if ($('mNumber') !== numero) return;
+      numero.value = '';
+      aviso.innerHTML = `<span class="fx-muted">No se pudo reservar (${esc(e.message)}): el número se asigna al guardar.</span>`;
+      return;
+    }
+    if ($('mNumber') !== numero) { api('/api/etiquetas/reservar-numero', { method: 'DELETE' }).catch(() => {}); return; }
+    reservaEtq.activa = true;
+    numero.value = r.number;
+    const vence = Date.now() + r.seconds * 1000;
+    const pintar = () => {
+      if ($('mNumber') !== numero) { soltarReserva(); return; }
+      const resta = Math.max(0, Math.round((vence - Date.now()) / 1000));
+      if (resta > 0) {
+        aviso.innerHTML = `Número <b>${esc(r.number)}</b> reservado para ti · ${Math.floor(resta / 60)}:${String(resta % 60).padStart(2, '0')}`;
+        return;
+      }
+      clearInterval(reservaEtq.timer);
+      reservaEtq.activa = false;
+      numero.value = '';
+      aviso.innerHTML = '<span class="fx-warn">La reserva venció: al guardar se asigna el siguiente número libre.</span> <button type="button" class="btn btn-secondary btn-sm" id="fxReservarOtra">Reservar otra vez</button>';
+      $('fxReservarOtra').onclick = reservarNumero;
+    };
+    pintar();
+    reservaEtq.timer = setInterval(pintar, 1000);
+  }
+
+  function ponerNumeroYCosto(cuerpo, etq, padreId) {
     const numero = $('mNumber');
     if (numero && !etq) {
       numero.value = '';
       numero.readOnly = true;
       numero.placeholder = 'Se asigna solo al guardar';
-      numero.title = 'El número es correlativo: lo pone el sistema al crear la etiqueta.';
+      numero.title = 'El número es correlativo: lo pone el sistema.';
+      if (!padreId) {
+        numero.insertAdjacentHTML('afterend', '<small class="fx-muted" id="fxReservaEtq" style="display:block;margin-top:4px"></small>');
+        reservarNumero();
+      }
     }
     const html = `<div class="fx-box" id="fxCostoEtq" style="margin:0 0 12px"><div class="fx-grid">${field('mClientCost', 'Costo acordado con el cliente (USD)', etq?.clientCost ?? '', 'number', 'min="0" step="0.01" placeholder="Ej.: 1240"')}</div>
       <small class="fx-muted">El total que le diste al cliente por esta carga. Con él se llena la factura y se calcula la comisión.</small></div>`;
