@@ -125,6 +125,7 @@
   const aBlob = (canvas) => new Promise((ok, mal) => canvas.toBlob((b) => (b ? ok(b) : mal(new Error('No se pudo generar la imagen'))), 'image/png'));
 
   async function abrir(l) {
+    if (!l || l.parentLabelId) return toast('La etiqueta PNG se genera solo desde la etiqueta principal');
     let f;
     try { f = await datosFijos(); } catch (e) { return toast(e.message || 'No se pudieron leer los datos del almacén'); }
     const v = datosEtiqueta(l);
@@ -190,7 +191,8 @@
 
   function botonEn(l) {
     const pie = document.querySelector('#modal .modal-foot');
-    if (!pie || !l || $('epAbrir')) return;
+    // Solo etiquetas principales: las subetiquetas no llevan su propia etiqueta PNG.
+    if (!pie || !l || l.parentLabelId || $('epAbrir')) return;
     pie.insertAdjacentHTML('afterbegin', '<button class="btn btn-secondary" id="epAbrir" type="button">Etiqueta PNG</button>');
     $('epAbrir').onclick = () => abrir(l);
   }
