@@ -438,6 +438,7 @@ async function ensureSchema() {
   await require('./packing-cliente').ensureSchema(db);
   await require('./ajustes').ensureSchema(db);
   await require('./contactos').ensureSchema(db);
+  await db.query('CREATE TABLE IF NOT EXISTS reservas_etiqueta (numero VARCHAR(30) PRIMARY KEY, usuario_id INTEGER NOT NULL, creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, vence_en TIMESTAMP NOT NULL)'); // migración 20261116000000
 
   // 9. Web pública (zarpes, rastreo, cotizador, solicitudes) y tienda en preventa
   await webPublica.ensureSchema(db);
@@ -840,15 +841,37 @@ app.delete('/api/contenedores/:id', auth, async (req, res) => {
  */
 const LLEGADA_SQL = (estado, fecha, nuevo = false) => `CASE WHEN ${estado} IN ('ve','done','closed') THEN COALESCE(NULLIF(${fecha},'')::date,${nuevo ? '' : 'fecha_llegada,'}CURRENT_DATE) ELSE NULL END`;
 
+const DIGITOS_ETIQUETA = 5;
+const MINUTOS_RESERVA = 5;
+const formatoEtiqueta = (n) => String(n).padStart(DIGITOS_ETIQUETA, '0');
+
+/** Números reservados (sin vencer) por OTRAS personas. Sin la migración 20261116000000 no hay reservas. */
+async function reservadosPorOtros(usuarioId) {
+  try {
+    const r = await db.query('SELECT numero FROM reservas_etiqueta WHERE vence_en > CURRENT_TIMESTAMP AND usuario_id <> $1', [usuarioId || 0]);
+    return new Set(r.rows.map((x) => Number(x.numero)));
+  } catch { return new Set(); }
+}
+
 /**
- * Siguiente número correlativo de etiqueta: el mayor número (solo dígitos) de las etiquetas principales + 1, con cuatro
- * dígitos (0001, 0002…). `minimo` sirve para saltar un número que ya se tomó en un choque.
+ * Siguiente número correlativo de etiqueta: el mayor número (solo dígitos) de las etiquetas principales + 1, con cinco
+ * dígitos (00001, 00002…), saltando los que otra persona tiene reservados. `minimo` sirve para saltar uno ya tomado.
  */
-async function siguienteCorrelativo(minimo = 1) {
+async function siguienteCorrelativo(minimo = 1, usuarioId = null) {
   const r = await db.query('SELECT numero FROM etiquetas WHERE etiqueta_padre_id IS NULL');
   let mayor = 0;
   for (const x of r.rows) { const t = String(x.numero || '').trim(); if (/^\d{1,12}$/.test(t)) mayor = Math.max(mayor, Number(t)); }
-  return String(Math.max(mayor + 1, minimo)).padStart(4, '0');
+  const reservados = await reservadosPorOtros(usuarioId);
+  let n = Math.max(mayor + 1, minimo);
+  while (reservados.has(n)) n++;
+  return formatoEtiqueta(n);
+}
+
+/** Reserva vigente de esta persona (o null). */
+async function reservaDe(usuarioId) {
+  try {
+    return (await db.query('SELECT numero FROM reservas_etiqueta WHERE usuario_id=$1 AND vence_en > CURRENT_TIMESTAMP ORDER BY creado_en DESC LIMIT 1', [usuarioId])).rows[0] || null;
+  } catch { return null; }
 }
 
 /** Costo acordado con el cliente: null si viene vacío, undefined si no es un número válido. */
@@ -873,6 +896,42 @@ async function fijarAsesoraEtiqueta(fila, asesoraId) {
     fila.asesora_id = asesoraId || null;
   } catch (e) { console.error('Asesora de la etiqueta no guardada (¿falta la migración 20261110000000?):', e.message); }
 }
+
+/**
+ * Reserva del siguiente número de etiqueta por 5 minutos para quien abre «Nueva etiqueta». Si ya tiene una vigente,
+ * se le renueva la misma. DELETE la suelta (al cerrar el formulario sin guardar).
+ */
+app.post('/api/etiquetas/reservar-numero', auth, async (req, res) => {
+  try {
+    await db.query('DELETE FROM reservas_etiqueta WHERE vence_en <= CURRENT_TIMESTAMP');
+    const propia = await reservaDe(req.user.id);
+    const usado = propia && (await db.query('SELECT 1 FROM etiquetas WHERE numero=$1', [propia.numero])).rows.length;
+    if (propia && !usado) {
+      await db.query(`UPDATE reservas_etiqueta SET vence_en = CURRENT_TIMESTAMP + INTERVAL '${MINUTOS_RESERVA} minutes' WHERE numero=$1`, [propia.numero]);
+      return res.json({ number: propia.numero, seconds: MINUTOS_RESERVA * 60 });
+    }
+    await db.query('DELETE FROM reservas_etiqueta WHERE usuario_id=$1', [req.user.id]);
+    let numero = await siguienteCorrelativo(1, req.user.id);
+    for (let intento = 0; ; intento++) {
+      try {
+        await db.query(`INSERT INTO reservas_etiqueta(numero,usuario_id,vence_en) VALUES($1,$2,CURRENT_TIMESTAMP + INTERVAL '${MINUTOS_RESERVA} minutes')`, [numero, req.user.id]);
+        break;
+      } catch (e) {
+        if (e.code !== '23505' || intento >= 5) throw e;
+        numero = await siguienteCorrelativo(Number(numero) + 1, req.user.id);
+      }
+    }
+    res.json({ number: numero, seconds: MINUTOS_RESERVA * 60 });
+  } catch (e) {
+    console.error(e);
+    res.status(e.code === '42P01' ? 503 : 500).json({ error: e.code === '42P01' ? 'Falta aplicar la migración 20261116000000_etiquetas_5_digitos_reserva.sql' : 'No se pudo reservar el número' });
+  }
+});
+
+app.delete('/api/etiquetas/reservar-numero', auth, async (req, res) => {
+  try { await db.query('DELETE FROM reservas_etiqueta WHERE usuario_id=$1', [req.user.id]); } catch { /* sin la tabla no hay nada que soltar */ }
+  res.json({ ok: true });
+});
 
 app.post('/api/etiquetas', auth, async (req, res) => {
   try {
@@ -927,8 +986,12 @@ app.post('/api/etiquetas', auth, async (req, res) => {
     const status = b.status === 'done' ? 'facturado' : (b.status || 'prep');
 
     // Correlativo: si dos etiquetas se crean a la vez y chocan, se toma el siguiente número.
+    // Si trae el número que esta persona tiene reservado (y sigue vigente), se usa ese; si no, el siguiente libre.
     const automatico = !parentId;
-    if (automatico) labelNumber = await siguienteCorrelativo();
+    if (automatico) {
+      const reserva = await reservaDe(req.user.id);
+      labelNumber = reserva && String(b.number || '').trim() === reserva.numero ? reserva.numero : await siguienteCorrelativo(1, req.user.id);
+    }
     let r;
     for (let intento = 0; ; intento++) {
       try {
@@ -940,9 +1003,10 @@ app.post('/api/etiquetas', auth, async (req, res) => {
         break;
       } catch (e) {
         if (e.code !== '23505' || !automatico || intento >= 4) throw e;
-        labelNumber = await siguienteCorrelativo(Number(labelNumber) + 1);
+        labelNumber = await siguienteCorrelativo(Number(labelNumber) + 1, req.user.id);
       }
     }
+    if (automatico) { try { await db.query('DELETE FROM reservas_etiqueta WHERE usuario_id=$1 OR numero=$2', [req.user.id, labelNumber]); } catch { /* sin la migración */ } }
     if (costo !== null) await fijarCostoEtiqueta(r.rows[0], costo);
 
     await fijarAsesoraEtiqueta(r.rows[0], c.rows[0].asesora_id);
