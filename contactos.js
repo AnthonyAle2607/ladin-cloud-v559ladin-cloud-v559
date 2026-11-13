@@ -1,6 +1,6 @@
 /**
  * Contactos por asignar (solo administrador): clientes del sistema anterior con solo nombre y teléfono. El administrador
- * elige la asesora de cada uno; al asignarlo se crea como cliente de esa asesora (código LC-CLI-…).
+ * elige la asesora de cada uno; al asignarlo se crea como cliente de esa asesora (código correlativo CC-###).
  *
  *   GET    /api/contactos?estado=pendiente|asignado|descartado|todos
  *   POST   /api/contactos/cargar    { contactos: [{ nombre, apellido, telefono }] }   (el panel los saca del archivo)
@@ -9,6 +9,8 @@
  *
  * No se guarda ningún otro dato del sistema anterior (ni código, ni asesora vieja, ni documentos).
  */
+const { asignarCodigoCliente } = require('./codigos');
+
 const MAX_CARGA = 5000;
 const texto = (v, max) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 /** Teléfono comparable: solo dígitos, últimos 10 (0424-1234567, 58 424 1234567 y 4241234567 son el mismo). */
@@ -124,8 +126,7 @@ function registrar(app, { db, auth, intId, logAction }) {
         if (!tomado.rowCount) { r.omitidos++; continue; }
         try {
           const c = (await db.query("INSERT INTO clientes(nombre,apellido,telefono,asesora_id,estado) VALUES($1,$2,$3,$4,'pending') RETURNING id", [k.nombre, k.apellido, k.telefono, asesora.id])).rows[0];
-          const codigo = `LC-CLI-${String(c.id).padStart(6, '0')}`;
-          await db.query('UPDATE clientes SET codigo_cliente=$1 WHERE id=$2', [codigo, c.id]);
+          const codigo = await asignarCodigoCliente(db, c.id);
           await db.query('UPDATE contactos_por_asignar SET cliente_id=$1 WHERE id=$2', [c.id, id]);
           clientes.agregar(k.nombre, k.apellido, k.telefono, { id: c.id, codigo_cliente: codigo, asesora: asesora.nombre });
           await logAction(req.user.id, `Cliente ${codigo} creado desde contactos por asignar`, 'clientes', c.id, `${k.nombre}${k.apellido ? ` ${k.apellido}` : ''} asignado a ${asesora.nombre}.`);
