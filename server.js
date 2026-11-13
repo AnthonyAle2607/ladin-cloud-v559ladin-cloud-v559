@@ -434,6 +434,7 @@ async function ensureSchema() {
   await documentos.ensureSchema(db);
   await require('./packing-cliente').ensureSchema(db);
   await require('./ajustes').ensureSchema(db);
+  await require('./contactos').ensureSchema(db);
 
   // 9. Web pública (zarpes, rastreo, cotizador, solicitudes) y tienda en preventa
   await webPublica.ensureSchema(db);
@@ -1325,6 +1326,7 @@ const { authCliente } = appMovil.registrar(app, { db, JWT_SECRET, loginLimiter, 
 // Packing lists que sube el cliente desde la app (la IA los revisa); en el panel ya no hay lector con IA.
 require('./packing-cliente').registrar(app, { db, auth, intId, logAction, authCliente });
 require('./ajustes').registrar(app, { db, auth, logAction });
+require('./contactos').registrar(app, { db, auth, intId, logAction });
 facturacion.registrar(app, { db, auth, intId, logAction, JWT_SECRET });
 importador.registrar(app, { db, auth, intId, logAction });
 require('./usuarios').registrar(app, { db, auth, intId, logAction, userOut, getBootstrap });
