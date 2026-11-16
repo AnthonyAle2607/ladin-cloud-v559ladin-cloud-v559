@@ -38,6 +38,18 @@ const iso = (v) => (v instanceof Date ? v.toISOString() : v ? String(v) : '');
 const usd = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /**
+ * Encabezado de los PDF con el logotipo horizontal oficial (manual de marca: sin deformar y con margen libre) y una
+ * línea naranja #FF7303. Si la imagen no está, escribe el nombre.
+ */
+const LOGO_PDF = require('path').join(__dirname, 'public', 'img', 'marca', 'logo-horizontal.png');
+function encabezadoPdf(doc, subtitulo) {
+  try { doc.image(LOGO_PDF, 40, 34, { width: 170 }); } catch { doc.font('Helvetica-Bold').fontSize(20).fillColor('#001E52').text('CRIOLLO CARGO', 40, 40); }
+  doc.font('Helvetica').fontSize(10).fillColor('#4a5870').text(subtitulo, 40, 76);
+  doc.moveTo(40, 92).lineTo(555, 92).lineWidth(1.5).strokeColor('#FF7303').stroke();
+  doc.fillColor('#001E52');
+}
+
+/**
  * Teléfono → número para wa.me (solo dígitos, con código de país). Venezuela por defecto:
  * 0412-1234567 y 412-1234567 → 584121234567. Si ya trae código (+58…, +1…) se respeta. Devuelve null si no es utilizable.
  */
@@ -389,11 +401,10 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
       doc.pipe(res);
       const usd = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-      doc.font('Helvetica-Bold').fontSize(20).text('CRIOLLO CARGO', { continued: false });
-      doc.font('Helvetica').fontSize(10).fillColor('#5a5b54').text('Factura de servicios');
-      doc.fillColor('#111210').font('Helvetica-Bold').fontSize(14).text(fo.codigo, 400, 40, { width: 155, align: 'right' });
+      encabezadoPdf(doc, 'Factura de servicios');
+      doc.fillColor('#001E52').font('Helvetica-Bold').fontSize(14).text(fo.codigo, 400, 40, { width: 155, align: 'right' });
       if (fo.status === 'anulada') doc.fillColor('#b4492b').fontSize(12).text('ANULADA', 400, 60, { width: 155, align: 'right' });
-      doc.fillColor('#111210').font('Helvetica').fontSize(10);
+      doc.fillColor('#001E52').font('Helvetica').fontSize(10);
 
       let y = 100;
       const dato = (k, v, x) => { doc.font('Helvetica-Bold').text(`${k}: `, x, y, { continued: true }).font('Helvetica').text(v || '—', { width: 240 }); };
@@ -408,25 +419,25 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
 
       y += 10;
       const cols = [[40, 24, '№'], [64, 150, 'Descripción'], [214, 40, 'Cajas'], [254, 55, 'CBM'], [309, 50, 'Peso kg'], [359, 62, '$/CBM'], [421, 62, 'Terrestre'], [483, 72, 'Monto']];
-      doc.rect(40, y, 515, 18).fill('#111210');
-      doc.fillColor('#ece8de').font('Helvetica-Bold').fontSize(8.5);
+      doc.rect(40, y, 515, 18).fill('#001E52');
+      doc.fillColor('#f2f5fa').font('Helvetica-Bold').fontSize(8.5);
       cols.forEach(([x, w, t]) => doc.text(t, x + 3, y + 5, { width: w - 6 }));
       y += 18;
-      doc.fillColor('#111210').font('Helvetica').fontSize(9);
+      doc.fillColor('#001E52').font('Helvetica').fontSize(9);
       items.forEach((i, n) => {
         if (y > 740) { doc.addPage(); y = 40; }
         const terrestre = i.landVolume * i.landRate + i.extra;
         const fila = [String(n + 1), i.description, String(i.boxes), i.cbm.toFixed(3), i.weight ? i.weight.toFixed(2) : '—', usd(i.seaRate), terrestre ? usd(terrestre) : '—', usd(i.amount)];
         cols.forEach(([x, w], k) => doc.text(fila[k], x + 3, y + 4, { width: w - 6, ellipsis: true, lineBreak: false }));
         y += 18;
-        doc.moveTo(40, y).lineTo(555, y).strokeColor('#c9c4b5').lineWidth(0.5).stroke();
+        doc.moveTo(40, y).lineTo(555, y).strokeColor('#cdd6e3').lineWidth(0.5).stroke();
       });
       y += 12;
       doc.font('Helvetica-Bold').fontSize(12).text(`TOTAL: ${usd(fo.total)}`, 40, y, { width: 515, align: 'right' });
       y += 18;
       doc.font('Helvetica').fontSize(10).text(`Pagado: ${usd(fo.paid)}   ·   Saldo: ${usd(fo.balance)}`, 40, y, { width: 515, align: 'right' });
       if (fo.notes) { y += 28; doc.font('Helvetica-Bold').text('Observaciones', 40, y); doc.font('Helvetica').text(fo.notes, 40, y + 14, { width: 515 }); }
-      doc.fontSize(8).fillColor('#7d7e75').text('Tarifas referenciales; los valores pueden variar según mercancía, modalidad, volumen y destino.', 40, 790, { width: 515, align: 'center' });
+      doc.fontSize(8).fillColor('#78849a').text('Tarifas referenciales; los valores pueden variar según mercancía, modalidad, volumen y destino.', 40, 790, { width: 515, align: 'center' });
       doc.end();
     } catch (e) {
       console.error(e);
@@ -629,10 +640,9 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="recibo-comisiones-${String(asesora.codigo_asesora || asesoraId).replace(/[^A-Za-z0-9_-]/g, '_')}.pdf"`);
       doc.pipe(res);
-      doc.font('Helvetica-Bold').fontSize(20).text('CRIOLLO CARGO');
-      doc.font('Helvetica').fontSize(10).fillColor('#5a5b54').text('Recibo de pago de comisiones');
-      doc.fillColor('#111210').fontSize(11);
-      let y = 90;
+      encabezadoPdf(doc, 'Recibo de pago de comisiones');
+      doc.fillColor('#001E52').fontSize(11);
+      let y = 100;
       doc.font('Helvetica-Bold').text('Asesor: ', 40, y, { continued: true }).font('Helvetica').text(`${asesora.nombre || '—'}${asesora.codigo_asesora ? ` (${asesora.codigo_asesora})` : ''}`);
       y += 16;
       const periodo = req.query.desde || req.query.hasta ? `${req.query.desde ? fecha(req.query.desde) || '' : 'inicio'} a ${req.query.hasta ? fecha(req.query.hasta) || '' : 'hoy'}` : 'Todos los pagos registrados';
@@ -642,25 +652,25 @@ function registrar(app, { db, auth, intId, logAction, JWT_SECRET, PDFKit = PDFDo
       y += 28;
 
       const cols = [[40, 62, 'Fecha pago'], [102, 78, 'Factura'], [180, 150, 'Cliente'], [330, 70, 'Base'], [400, 80, 'Regla'], [480, 75, 'Comisión']];
-      doc.rect(40, y, 515, 18).fill('#111210');
-      doc.fillColor('#ece8de').font('Helvetica-Bold').fontSize(8.5);
+      doc.rect(40, y, 515, 18).fill('#001E52');
+      doc.fillColor('#f2f5fa').font('Helvetica-Bold').fontSize(8.5);
       cols.forEach(([x, w, t]) => doc.text(t, x + 3, y + 5, { width: w - 6 }));
       y += 18;
-      doc.fillColor('#111210').font('Helvetica').fontSize(9);
+      doc.fillColor('#001E52').font('Helvetica').fontSize(9);
       for (const c of filas) {
         if (y > 700) { doc.addPage(); y = 40; }
         const regla = c.rule === 'fijo_cbm' ? `${usd(c.rate)}/CBM` : `${c.rate}% ${c.rule === 'porcentaje_flete' ? 'flete' : 'total'}`;
         const fila = [c.paidDate, c.invoiceCode, `${c.clientCode ? c.clientCode + ' · ' : ''}${c.clientName}`, c.rule === 'fijo_cbm' ? `${c.base} CBM` : usd(c.base), regla, usd(c.amount)];
         cols.forEach(([x, w], k) => doc.text(fila[k], x + 3, y + 4, { width: w - 6, ellipsis: true, lineBreak: false }));
         y += 18;
-        doc.moveTo(40, y).lineTo(555, y).strokeColor('#c9c4b5').lineWidth(0.5).stroke();
+        doc.moveTo(40, y).lineTo(555, y).strokeColor('#cdd6e3').lineWidth(0.5).stroke();
       }
       y += 14;
       doc.font('Helvetica-Bold').fontSize(13).text(`TOTAL PAGADO: ${usd(total)}`, 40, y, { width: 515, align: 'right' });
       y += 24;
-      doc.font('Helvetica').fontSize(9).fillColor('#5a5b54').text(`${filas.length} comisión(es) en ${new Set(filas.map((c) => c.invoiceId)).size} factura(s).`, 40, y, { width: 515, align: 'right' });
+      doc.font('Helvetica').fontSize(9).fillColor('#4a5870').text(`${filas.length} comisión(es) en ${new Set(filas.map((c) => c.invoiceId)).size} factura(s).`, 40, y, { width: 515, align: 'right' });
       if (y > 640) { doc.addPage(); y = 40; } else y += 60;
-      doc.fillColor('#111210').strokeColor('#111210').lineWidth(0.8);
+      doc.fillColor('#001E52').strokeColor('#001E52').lineWidth(0.8);
       doc.moveTo(60, y + 40).lineTo(260, y + 40).stroke().moveTo(330, y + 40).lineTo(530, y + 40).stroke();
       doc.fontSize(9).text('Entregado por', 60, y + 46, { width: 200, align: 'center' }).text('Recibido por (firma y fecha)', 330, y + 46, { width: 200, align: 'center' });
       doc.end();

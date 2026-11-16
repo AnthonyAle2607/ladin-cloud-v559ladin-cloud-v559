@@ -295,7 +295,7 @@
      ===================================================================================================== */
 
   let cobFiltroAsesor = '';
-  const COLOR_TRAMO = { por_llegar: 'var(--navy, #1f3a4d)', '0-15': 'var(--green)', '16-30': 'var(--amber-d)', '31-60': 'var(--brick)', '61+': 'var(--brick)' };
+  const COLOR_TRAMO = { por_llegar: 'var(--navy, #2f5fa7)', '0-15': 'var(--green)', '16-30': 'var(--amber-d)', '31-60': 'var(--brick)', '61+': 'var(--brick)' };
 
   /** Mismo criterio que el servidor: 0412-1234567 / 412-1234567 → 584121234567; respeta códigos de país ya escritos. */
   function numeroWhatsapp(tel) {
