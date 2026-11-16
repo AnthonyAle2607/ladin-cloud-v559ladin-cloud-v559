@@ -15,6 +15,8 @@
   const FUENTE = '"Microsoft YaHei","PingFang SC","Noto Sans SC","Noto Sans CJK SC","Source Han Sans SC","SimHei","Heiti SC",Arial,sans-serif';
   const esAdmin = () => me()?.role === 'admin';
   let fijos = null;
+  const LOGO = new Image();
+  LOGO.src = 'img/marca/logo-horizontal.png';
 
   async function datosFijos(forzar = false) {
     if (!fijos || forzar) fijos = await api('/api/ajustes/etiqueta-almacen');
@@ -85,11 +87,17 @@
     filas.push({ k: '名称\nMercancía', v: v.mercancia || '—', h: 170, tam: 60, lineas: 2 });
     filas.push({ k: '区域\nÁrea', v: f.area || '—', h: 150, tam: 84 });
 
-    // Encabezado
-    ctx.font = `800 64px ${FUENTE}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('CRIOLLO CARGO', W / 2, M + 50);
+    // Encabezado: logotipo horizontal oficial (proporción intacta); si no cargó, el nombre en texto.
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    if (LOGO.complete && LOGO.naturalWidth) {
+      const ancho = 470, alto = Math.round(ancho * LOGO.naturalHeight / LOGO.naturalWidth);
+      ctx.drawImage(LOGO, (W - ancho) / 2, M, ancho, alto);
+    } else {
+      ctx.font = `800 64px ${FUENTE}`;
+      ctx.fillText('CRIOLLO CARGO', W / 2, M + 50);
+    }
     ctx.font = `600 34px ${FUENTE}`;
-    ctx.fillText(`义乌仓库 · 委内瑞拉 (VE)${f.guias ? `   ·   票数 ${f.guias}` : ''}`, W / 2, M + 115);
+    ctx.fillText(`义乌仓库 · 委内瑞拉 (VE)${f.guias ? `   ·   票数 ${f.guias}` : ''}`, W / 2, M + 125);
 
     // Tabla
     const x0 = M, ancho = W - 2 * M, kw = 300;
@@ -134,6 +142,7 @@
     const pintar = () => { v.cajas = $('epCajas').value.trim(); v.mercancia = $('epMerc').value.trim(); dibujar($('epLienzo'), f, v); };
     $('epCajas').oninput = pintar; $('epMerc').oninput = pintar;
     if (document.fonts?.ready) await document.fonts.ready;
+    try { await LOGO.decode(); } catch { /* sin logo: se dibuja el nombre */ }
     pintar();
     $('epBajar').onclick = async () => {
       try {
