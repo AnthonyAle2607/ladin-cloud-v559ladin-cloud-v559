@@ -43,6 +43,7 @@ Migración: `supabase/migrations/20261116000000_etiquetas_5_digitos_reserva.sql`
 - «Negocio» (业务) se quitó: repetía el código del asesor, que ya sale en 客服编号.
 - Variables: 客服编号 = código del asesor, 客户编号 = código del cliente, 单据编号 = número de etiqueta, 箱数 = cajas,
   名称 = mercancía.
-- Fijos (responsables y teléfonos, dirección, 区域 = área —1 es Caracas—, 票数, nota): `GET/PUT /api/ajustes/etiqueta-almacen`,
+- **Área (区域):** estado de Venezuela al que va el envío, elegido en la etiqueta («Área · estado de destino»; si no se elige, el del cliente). Se imprime «número · estado»: 1 Distrito Capital y el resto en orden alfabético hasta 24 Zulia (areas.js). El administrador cambia los números con «Números de las áreas…» (`/api/ajustes/areas`). Migración `20261118000000_etiqueta_area_destino.sql`.
+- Fijos (responsables y teléfonos, dirección, 票数, nota): `GET/PUT /api/ajustes/etiqueta-almacen`,
   tabla `ajustes`. Solo el administrador los cambia («Datos fijos del almacén…» dentro del modal).
 - Se dibuja en el navegador (canvas 1240 × 1754) con las fuentes chinas del sistema; no pasa por el servidor.

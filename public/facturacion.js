@@ -764,11 +764,26 @@ Clave: ${claveMostrada}`).then(() => aviso('Copiado'), () => aviso('No se pudo c
         reservarNumero();
       }
     }
-    const html = `<div class="fx-box" id="fxCostoEtq" style="margin:0 0 12px"><div class="fx-grid">${field('mClientCost', 'Costo acordado con el cliente (USD)', etq?.clientCost ?? '', 'number', 'min="0" step="0.01" placeholder="Ej.: 1240"')}</div>
-      <small class="fx-muted">El total que le diste al cliente por esta carga. Con él se llena la factura y se calcula la comisión.</small></div>`;
+    const html = `<div class="fx-box" id="fxCostoEtq" style="margin:0 0 12px"><div class="fx-grid">${field('mClientCost', 'Costo acordado con el cliente (USD)', etq?.clientCost ?? '', 'number', 'min="0" step="0.01" placeholder="Ej.: 1240"')}
+        <div class="field"><label for="mArea">Área · estado de destino</label><select id="mArea"><option value="">Según el estado del cliente</option></select></div></div>
+      <small class="fx-muted">El total que le diste al cliente por esta carga (llena la factura y la comisión) y el estado al que va el envío (sale en la etiqueta PNG).</small></div>`;
     const asesora = $('fxAsesoraEtq');
     if (asesora) asesora.insertAdjacentHTML('afterend', html);
     else (cuerpo.querySelector('.modal-intro') || cuerpo).insertAdjacentHTML(cuerpo.querySelector('.modal-intro') ? 'afterend' : 'afterbegin', html);
+    llenarAreas($('mArea'), etq?.destinationState || '');
+  }
+
+  /** Áreas de la etiqueta: los 24 estados de Venezuela con su número (1 Distrito Capital…). Se piden una sola vez. */
+  let areasPromesa = null;
+  window.areasEtiqueta = (forzar = false) => {
+    if (!areasPromesa || forzar) areasPromesa = api('/api/ajustes/areas').catch((e) => { areasPromesa = null; throw e; });
+    return areasPromesa;
+  };
+  async function llenarAreas(select, actual) {
+    if (!select) return;
+    let areas;
+    try { areas = await window.areasEtiqueta(); } catch { return; }
+    select.insertAdjacentHTML('beforeend', areas.map((a) => `<option value="${esc(a.estado)}" ${a.estado === actual ? 'selected' : ''}>${esc(a.numero)} · ${esc(a.estado)}</option>`).join(''));
   }
 
   async function cargarAppEtiqueta(etq) {
