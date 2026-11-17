@@ -100,7 +100,9 @@
       ctx.fillText('CRIOLLO CARGO', W / 2, M + 50);
     }
     ctx.font = `600 34px ${FUENTE}`;
-    ctx.fillText(`义乌仓库 · 委内瑞拉 (VE)${f.guias ? `   ·   票数 ${f.guias}` : ''}`, W / 2, M + 125);
+    // Ciudad del almacén tomada de la dirección («…江门市恩平市…» → 恩平仓库)
+    const ciudad = (String(f.direccion || '').match(/([^省市县区镇]{2,4})市(?!.*市)/) || [])[1];
+    ctx.fillText(`${ciudad || '中国'}仓库 · 委内瑞拉 (VE)${f.guias ? `   ·   票数 ${f.guias}` : ''}`, W / 2, M + 125);
 
     // Tabla
     const x0 = M, ancho = W - 2 * M, kw = 300;

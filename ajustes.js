@@ -1,5 +1,5 @@
 /**
- * Ajustes que cambia el administrador. Por ahora: los datos fijos de la etiqueta del almacén de Yiwu (la imagen PNG que
+ * Ajustes que cambia el administrador. Por ahora: los datos fijos de la etiqueta del almacén en China (la imagen PNG que
  * la asesora le manda al cliente para que el proveedor la pegue en las cajas).
  *
  *   GET /api/ajustes/etiqueta-almacen   → datos fijos (cualquier usuario del panel; los usa para dibujar la etiqueta)
@@ -8,12 +8,8 @@
 
 /** Valores por defecto: los de la etiqueta que usa hoy el almacén. */
 const ETIQUETA_POR_DEFECTO = {
-  responsables: [
-    { nombre: '刘生', telefono: '19858987879' },
-    { nombre: '何生', telefono: '15355319599' },
-    { nombre: '余生', telefono: '13432299909' },
-  ],
-  direccion: '浙江省义乌市福田宗宅5区15栋1单元，导航（顺风外贸部）',
+  responsables: [{ nombre: '余生', telefono: '15976460367' }],
+  direccion: '广东省江门市恩平市东成镇淘金路2号（华达工业园）临街商铺3号横槎红绿灯旁利侨委国贷运',
   guias: '1',
   nota: '因英文翻译有差异供应商根据交货产品的实际箱数和实际名称自行修改，此标签贴上外',
 };
