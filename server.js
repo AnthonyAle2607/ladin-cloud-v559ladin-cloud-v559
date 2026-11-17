@@ -89,6 +89,7 @@ const loginLimiter = rateLimit({
    ========================================================================== */
 
 const { siguienteCodigoCliente, asignarCodigoCliente, guardarCodigo, partesDeCodigo } = require('./codigos');
+const { estadoValido } = require('./areas');
 
 /**
  * El correlativo del código de cliente es único para todos (CCMI-G-0015 y VLCN-T-0015 no pueden convivir). Devuelve el
@@ -179,6 +180,8 @@ function labelOut(r, family = {}) {
     advisorId: r.asesora_id ? pref('u', r.asesora_id) : '',
     // Costo total en USD acordado con el cliente al crear la etiqueta (llena la factura y la comisión).
     clientCost: r.costo_cliente_usd == null ? '' : Number(r.costo_cliente_usd),
+    // Área: estado de Venezuela al que va el envío (casilla 区域 de la etiqueta PNG).
+    destinationState: r.area_destino || '',
     containerId: r.contenedor_id ? pref('co', r.contenedor_id) : '',
     status: r.estado === 'done' ? 'facturado' : (r.estado || 'prep'),
     notes: r.observaciones || '',
@@ -422,6 +425,7 @@ async function ensureSchema() {
   // Asesora de la etiqueta (migración 20261110000000_asesor_etiqueta_llegada.sql); las viejas toman la de su cliente.
   await db.query("ALTER TABLE etiquetas ADD COLUMN IF NOT EXISTS asesora_id INTEGER");
   await db.query("ALTER TABLE etiquetas ADD COLUMN IF NOT EXISTS costo_cliente_usd NUMERIC(12,2)"); // migración 20261113000000
+  await db.query("ALTER TABLE etiquetas ADD COLUMN IF NOT EXISTS area_destino VARCHAR(40)"); // migración 20261118000000
   await db.query("UPDATE etiquetas SET asesora_id=(SELECT c.asesora_id FROM clientes c WHERE c.id=etiquetas.cliente_id) WHERE asesora_id IS NULL");
 
   // 5. Historial, Recordatorios, Quejas, Notas
@@ -902,6 +906,14 @@ function costoCliente(v) {
 }
 
 /** Guarda el costo acordado. Sin la migración 20261113000000 la columna no existe: la etiqueta se guarda igual. */
+/** Guarda el área (estado de destino). Sin la migración 20261118000000 la columna no existe: la etiqueta se guarda igual. */
+async function fijarAreaEtiqueta(fila, estado) {
+  try {
+    await db.query('UPDATE etiquetas SET area_destino=$1 WHERE id=$2', [estado, fila.id]);
+    fila.area_destino = estado;
+  } catch (e) { console.error('Área de la etiqueta no guardada (¿falta la migración 20261118000000?):', e.message); }
+}
+
 async function fijarCostoEtiqueta(fila, costo) {
   try {
     await db.query('UPDATE etiquetas SET costo_cliente_usd=$1 WHERE id=$2', [costo, fila.id]);
@@ -961,7 +973,7 @@ app.post('/api/etiquetas', auth, async (req, res) => {
     const costo = costoCliente(b.clientCost);
     if (costo === undefined) return res.status(400).json({ error: 'El costo acordado con el cliente debe ser un número en dólares, 0 o mayor' });
 
-    const c = await db.query('SELECT asesora_id FROM clientes WHERE id=$1', [clientId]);
+    const c = await db.query('SELECT asesora_id, estado_venezuela FROM clientes WHERE id=$1', [clientId]);
     if (!c.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     if (req.user.rol !== 'admin' && c.rows[0].asesora_id !== req.user.id) return res.status(403).json({ error: 'No tienes permiso' });
 
@@ -1028,6 +1040,9 @@ app.post('/api/etiquetas', auth, async (req, res) => {
     }
     if (automatico) { try { await db.query('DELETE FROM reservas_etiqueta WHERE usuario_id=$1 OR numero=$2', [req.user.id, labelNumber]); } catch { /* sin la migración */ } }
     if (costo !== null) await fijarCostoEtiqueta(r.rows[0], costo);
+    // Área: el estado elegido; si no se eligió, el estado del cliente.
+    const area = estadoValido(b.destinationState) || estadoValido(c.rows[0].estado_venezuela);
+    if (area) await fijarAreaEtiqueta(r.rows[0], area);
 
     await fijarAsesoraEtiqueta(r.rows[0], c.rows[0].asesora_id);
     await logAction(req.user.id, `Etiqueta ${labelNumber} agregada`, 'etiquetas', r.rows[0].id, `Se creó la etiqueta ${labelNumber}.`);
@@ -1060,6 +1075,11 @@ app.put('/api/etiquetas/:id', auth, async (req, res) => {
       [labelNumber, clientId, containerId, status, b.notes || null, !!b.ready, b.cargoType || null, boxesPacking, boxesChina, cbmPacking, cbmChina, familyCode, parentId, hasSubs, id]
     );
 
+    if (b.destinationState !== undefined) {
+      const area = b.destinationState === '' ? null : estadoValido(b.destinationState);
+      if (b.destinationState !== '' && !area) return res.status(400).json({ error: 'El área debe ser uno de los 24 estados de Venezuela' });
+      await fijarAreaEtiqueta(r.rows[0], area);
+    }
     if (b.clientCost !== undefined) {
       const costoNuevo = costoCliente(b.clientCost);
       if (costoNuevo === undefined) return res.status(400).json({ error: 'El costo acordado con el cliente debe ser un número en dólares, 0 o mayor' });

@@ -2,7 +2,8 @@
  * Etiqueta PNG con el formato del almacén de Yiwu: la imagen que la asesora le manda al cliente para que su proveedor
  * la pegue en las cajas.
  *
- *  - Datos fijos (responsables y teléfonos, dirección, 区域 = área; 1 es Caracas): GET /api/ajustes/etiqueta-almacen; el administrador los
+ *  - Área (区域): el estado de destino de la etiqueta con su número (1 Distrito Capital…; ver areas.js).
+ *  - Datos fijos (responsables y teléfonos, dirección): GET /api/ajustes/etiqueta-almacen; el administrador los
  *    cambia con PUT desde el mismo modal.
  *  - Datos de la etiqueta: 客服编号 = código del asesor, 客户编号 = código del cliente, 单据编号 = número de etiqueta,
  *    箱数 = cajas, 名称 = mercancía. Cajas y mercancía se pueden ajustar antes de descargar.
@@ -35,6 +36,8 @@
       numero: l.number || '',
       cajas: cajas == null ? '' : String(cajas),
       mercancia: l.cargoType || '',
+      // Área: el estado de destino de la etiqueta; si no tiene, el estado del cliente.
+      estado: l.destinationState || cliente.state || '',
     };
   }
 
@@ -85,7 +88,7 @@
     filas.push({ k: '单据编号\nN.º etiqueta', v: v.numero || '—', h: 170, tam: 110 });
     filas.push({ k: '箱数\nCajas', v: v.cajas ? `${v.cajas} 箱` : '—', h: 150, tam: 84 });
     filas.push({ k: '名称\nMercancía', v: v.mercancia || '—', h: 170, tam: 60, lineas: 2 });
-    filas.push({ k: '区域\nÁrea', v: f.area || '—', h: 150, tam: 84 });
+    filas.push({ k: '区域\nÁrea', v: v.area || '—', h: 150, tam: 72 });
 
     // Encabezado: logotipo horizontal oficial (proporción intacta); si no cargó, el nombre en texto.
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -125,22 +128,24 @@
 
   async function abrir(l) {
     if (!l || l.parentLabelId) return toast('La etiqueta PNG se genera solo desde la etiqueta principal');
-    let f;
-    try { f = await datosFijos(); } catch (e) { return toast(e.message || 'No se pudieron leer los datos del almacén'); }
+    let f, areas;
+    try { [f, areas] = await Promise.all([datosFijos(), window.areasEtiqueta()]); } catch (e) { return toast(e.message || 'No se pudieron leer los datos del almacén'); }
     const v = datosEtiqueta(l);
-    const falta = [!v.asesor && 'código del asesor', !v.cliente && 'código del cliente'].filter(Boolean);
+    const textoArea = (estado) => { const a = areas.find((x) => x.estado === estado); return a ? `${a.numero} · ${a.estado}` : ''; };
+    const falta = [!v.asesor && 'código del asesor', !v.cliente && 'código del cliente', !textoArea(v.estado) && 'estado de destino (área)'].filter(Boolean);
     openModal(`Etiqueta PNG · ${esc(v.numero)}`, `
       <p class="fx-muted" style="margin-top:0">Imagen para mandarle al cliente: su proveedor la imprime y la pega en cada caja.${falta.length ? ` <b>Falta el ${falta.join(' y el ')}</b>: complétalo en el usuario o el cliente.` : ''}</p>
       <div class="fx-grid">
         <div class="field"><label for="epCajas">箱数 · Cajas</label><input id="epCajas" type="number" min="0" step="1" value="${esc(v.cajas)}"></div>
         <div class="field"><label for="epMerc">名称 · Mercancía</label><input id="epMerc" maxlength="80" value="${esc(v.mercancia)}" placeholder="Ej.: 衣服 / Ropa"></div>
+        <div class="field"><label for="epArea">区域 · Área (estado de destino)</label><select id="epArea"><option value="">Elegir estado…</option>${areas.map((a) => `<option value="${esc(a.estado)}" ${a.estado === v.estado ? 'selected' : ''}>${esc(a.numero)} · ${esc(a.estado)}</option>`).join('')}</select></div>
       </div>
       <div style="text-align:center;margin-top:10px"><canvas id="epLienzo" style="max-width:100%;max-height:60vh;border:1px solid #ccc;background:#fff"></canvas></div>
-      ${esAdmin() ? '<div class="row" style="margin-top:8px"><button class="btn btn-secondary btn-sm" id="epFijos" type="button">Datos fijos del almacén…</button></div>' : ''}`,
+      ${esAdmin() ? '<div class="row" style="margin-top:8px"><button class="btn btn-secondary btn-sm" id="epFijos" type="button">Datos fijos del almacén…</button><button class="btn btn-secondary btn-sm" id="epAreas" type="button">Números de las áreas…</button></div>' : ''}`,
       `<button class="btn btn-secondary" id="modalCancel">Cerrar</button>${navigator.canShare ? '<button class="btn btn-secondary" id="epCompartir">Compartir</button>' : ''}<button class="btn btn-primary" id="epBajar">Descargar PNG</button>`);
     $('modalCancel').onclick = closeModal;
-    const pintar = () => { v.cajas = $('epCajas').value.trim(); v.mercancia = $('epMerc').value.trim(); dibujar($('epLienzo'), f, v); };
-    $('epCajas').oninput = pintar; $('epMerc').oninput = pintar;
+    const pintar = () => { v.cajas = $('epCajas').value.trim(); v.mercancia = $('epMerc').value.trim(); v.area = textoArea($('epArea').value); dibujar($('epLienzo'), f, v); };
+    $('epCajas').oninput = pintar; $('epMerc').oninput = pintar; $('epArea').onchange = pintar;
     if (document.fonts?.ready) await document.fonts.ready;
     try { await LOGO.decode(); } catch { /* sin logo: se dibuja el nombre */ }
     pintar();
@@ -159,6 +164,25 @@
       } catch (e) { if (e.name !== 'AbortError') toast(e.message); }
     });
     $('epFijos')?.addEventListener('click', () => editarFijos(l));
+    $('epAreas')?.addEventListener('click', () => editarAreas(l, areas));
+  }
+
+  /** Administrador: número de cada estado (casilla 区域). Una línea por estado: «1 = Distrito Capital». */
+  function editarAreas(l, areas) {
+    openModal('Números de las áreas (estados de destino)', `
+      <p class="fx-muted" style="margin-top:0">Una línea por estado: <b>número = estado</b>. Son los 24 estados de Venezuela; solo cambia el número.</p>
+      <div class="field"><label for="eaLista">Áreas</label><textarea id="eaLista" rows="14">${esc(areas.map((a) => `${a.numero} = ${a.estado}`).join('\n'))}</textarea></div>`,
+      '<button class="btn btn-secondary" id="modalCancel">Volver</button><button class="btn btn-primary" id="eaGuardar">Guardar</button>');
+    $('modalCancel').onclick = () => abrir(l);
+    $('eaGuardar').onclick = async () => {
+      const lista = $('eaLista').value.split('\n').map((x) => x.trim()).filter(Boolean).map((x) => { const [numero, ...resto] = x.split('='); return { numero: numero.trim(), estado: resto.join('=').trim() }; });
+      try {
+        await api('/api/ajustes/areas', { method: 'PUT', body: JSON.stringify({ areas: lista }) });
+        await window.areasEtiqueta(true);
+        toast('Números de las áreas guardados');
+        abrir(l);
+      } catch (e) { toast(e.message); }
+    };
   }
 
   function editarFijos(l) {
@@ -169,7 +193,6 @@
       <div class="field"><label for="efResp">收货人 · Responsables (uno por línea: nombre y teléfono)</label><textarea id="efResp" rows="4">${esc(resp)}</textarea></div>
       <div class="field"><label for="efDir">地址 · Dirección del almacén</label><textarea id="efDir" rows="2" maxlength="300">${esc(f.direccion || '')}</textarea></div>
       <div class="fx-grid">
-        <div class="field"><label for="efArea">区域 · Área (1 = Caracas)</label><input id="efArea" maxlength="30" value="${esc(f.area || '')}"></div>
         <div class="field"><label for="efGuias">票数 · Guías</label><input id="efGuias" maxlength="10" value="${esc(f.guias || '')}"></div>
       </div>
       <div class="field"><label for="efNota">Nota al pie</label><textarea id="efNota" rows="3" maxlength="400">${esc(f.nota || '')}</textarea></div>`,
@@ -181,7 +204,7 @@
         return m ? { nombre: m[1].trim(), telefono: m[2].replace(/\s+/g, '') } : { nombre: x, telefono: '' };
       });
       try {
-        fijos = await api('/api/ajustes/etiqueta-almacen', { method: 'PUT', body: JSON.stringify({ responsables, direccion: $('efDir').value, area: $('efArea').value, guias: $('efGuias').value, nota: $('efNota').value }) });
+        fijos = await api('/api/ajustes/etiqueta-almacen', { method: 'PUT', body: JSON.stringify({ responsables, direccion: $('efDir').value, guias: $('efGuias').value, nota: $('efNota').value }) });
         toast('Datos del almacén guardados');
         abrir(l);
       } catch (e) { toast(e.message); }
