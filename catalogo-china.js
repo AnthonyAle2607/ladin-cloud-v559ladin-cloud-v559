@@ -106,7 +106,7 @@ function crear(db) {
     const cuerpo = new URLSearchParams({ instanceKey: clave(), language: 'es', ...params });
     let r;
     try {
-      r = await fetch(base() + metodo, { method: 'POST', body: cuerpo, signal: AbortSignal.timeout(20000) });
+      r = await fetch(base() + metodo, { method: 'POST', body: cuerpo, signal: AbortSignal.timeout(27000) }); // Vercel corta a los 30 s (vercel.json)
     } catch {
       throw new ErrorChina('El catálogo de China tardó demasiado en responder. Intenta de nuevo.', 504);
     }
