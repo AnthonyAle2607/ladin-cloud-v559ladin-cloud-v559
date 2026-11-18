@@ -237,3 +237,25 @@ cotiza con el importador («Abrir en el importador» trae el primer enlace ya pe
 - Tarifas terrestres: el diseño y el panel difieren en algunos estados (el panel no tiene Carabobo ni Nueva Esparta y
   tiene «Oriente»). `tarifas.js` usa la tabla del diseño; hay que confirmarla.
 - Contenido de las preguntas frecuentes y textos legales (términos de la preventa, devoluciones).
+
+## «Directo de China» (catálogo de 1688 en vivo)
+
+La web (`/china` y `/china/[id]`) muestra el catálogo de 1688 sin importar nada, a través de **OTAPI** (OT Commerce,
+plan por llamada). Archivo `catalogo-china.js`; en la web `src/lib/china.ts`, `src/app/china/` y `src/components/china/`.
+
+- **Rutas:** `GET /api/web/china/categorias`, `GET /api/web/china/buscar?q=&categoria=&pagina=` (24 por página, hasta
+  20 páginas), `GET /api/web/china/producto/:id` y `POST /api/web/china/pedido`. Públicas, con límite por IP.
+- **Precio:** el mismo de `sugerirPrecio` del importador (yuanes ÷ `TIENDA_TASA_CNY` + envío en China + flete por el
+  volumen de una unidad × tarifa por m³ + margen). Si el producto no trae medidas, el precio dice «flete aparte».
+  Tramos por cantidad del fabricante y precio propio de cada combinación (color/talla). La web nunca recibe el costo,
+  el proveedor ni el enlace de 1688.
+- **Pedido:** llega al panel como encargo (*Solicitudes web*) con el enlace de 1688, la opción elegida, cantidad y el
+  precio estimado; el equipo confirma por WhatsApp antes de cobrar. Mismo número `ENC-0000` que «Pídelo de China».
+- **Gasto controlado:** caché en `china_cache` (búsquedas y fichas 6 h, categorías 7 días; la web además guarda sus
+  páginas unas horas) y tope diario de llamadas en `china_uso` (`CHINA_LLAMADAS_DIA`, 3000). Al llegar al tope solo se
+  sirve lo que está en caché. Migración `20261120000000_catalogo_china.sql` (sin ella, caché y tope en memoria).
+- **Variables (Vercel, proyecto del panel):** `OTAPI_KEY` (sin ella la sección responde «no disponible»),
+  `CHINA_LLAMADAS_DIA` opcional.
+- Títulos sin el relleno de 1688 («(Al por mayor)», «(Comercio transfronterizo)»…).
+- Probado contra OTAPI real (clave de prueba) y Postgres local: búsqueda ~4 s la primera vez y 6 ms desde caché;
+  ficha con opciones, tramos y fotos del fabricante; pedido guardado como encargo.
