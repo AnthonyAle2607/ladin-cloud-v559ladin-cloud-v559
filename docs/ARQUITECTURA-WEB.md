@@ -238,24 +238,32 @@ cotiza con el importador («Abrir en el importador» trae el primer enlace ya pe
   tiene «Oriente»). `tarifas.js` usa la tabla del diseño; hay que confirmarla.
 - Contenido de las preguntas frecuentes y textos legales (términos de la preventa, devoluciones).
 
-## «Directo de China» (catálogo de 1688 en vivo)
+## Tienda (catálogo de 1688 en vivo)
 
-La web (`/china` y `/china/[id]`) muestra el catálogo de 1688 sin importar nada, a través de **OTAPI** (OT Commerce,
-plan por llamada). Archivo `catalogo-china.js`; en la web `src/lib/china.ts`, `src/app/china/` y `src/components/china/`.
+La única tienda de la web es el catálogo de 1688 a través de **OTAPI** (OT Commerce, plan por llamada); la preventa,
+«Directo de China» y «Pídelo de China» se quitaron de la web (/china, /encargos y /pedido redirigen a /tienda).
+Archivo `catalogo-china.js`; en la web `src/lib/china.ts`, `src/app/tienda/`, `src/components/china/`,
+`src/lib/carrito.tsx` y `src/components/tienda/EnviarPedido.tsx` (/pagar).
 
-- **Rutas:** `GET /api/web/china/categorias`, `GET /api/web/china/buscar?q=&categoria=&pagina=` (24 por página, hasta
-  20 páginas), `GET /api/web/china/producto/:id` y `POST /api/web/china/pedido`. Públicas, con límite por IP.
-- **Precio:** el mismo de `sugerirPrecio` del importador (yuanes ÷ `TIENDA_TASA_CNY` + envío en China + flete por el
-  volumen de una unidad × tarifa por m³ + margen). Si el producto no trae medidas, el precio dice «flete aparte».
-  Tramos por cantidad del fabricante y precio propio de cada combinación (color/talla). La web nunca recibe el costo,
-  el proveedor ni el enlace de 1688.
-- **Pedido:** llega al panel como encargo (*Solicitudes web*) con el enlace de 1688, la opción elegida, cantidad y el
-  precio estimado; el equipo confirma por WhatsApp antes de cobrar. Mismo número `ENC-0000` que «Pídelo de China».
+- **Rutas:** `GET /api/web/china/inicio` (filas de la portada: título y búsqueda; la web pide cada fila aparte),
+  `GET /api/web/china/categorias`, `GET /api/web/china/buscar?q=&categoria=&pagina=&tam=` (12 o 24 por página, hasta
+  20 páginas), `GET /api/web/china/producto/:id` y `POST /api/web/china/pedido` (`items` del carrito). Públicas, con
+  límite por IP.
+- **Precio (como LadinCloud):** precio de fábrica en yuanes ÷ `TIENDA_TASA_CNY` + envío en China
+  (`TIENDA_ENVIO_CHINA_PCT`) + margen (`TIENDA_MARGEN_PCT`), redondeado al céntimo. El **flete marítimo va aparte**:
+  cada producto trae `fleteUnidadUsd` (volumen de una unidad + 20 % de empaque × tarifa por m³ de `tarifas.js`) y el
+  carrito lo suma como «flete estimado»; los productos sin medidas quedan «por calcular». Tramos por cantidad y precio
+  propio por combinación (color/talla). La web nunca recibe el costo en yuanes, el proveedor ni el enlace de 1688.
+- **Pedido:** carrito de varios productos (guardado en el navegador). «Enviar pedido» manda nombre, WhatsApp, estado y
+  los productos; el servidor recalcula precios y valida opciones, mínimo y existencia, y lo guarda como **un encargo**
+  (*Solicitudes web*, `ENC-0000`) con cada producto, opción, cantidad, precio, enlace de 1688, subtotal y flete
+  estimado. El equipo confirma por WhatsApp y cobra. No hay pago en la web.
+- **Portada de la tienda:** filas por búsqueda (`SECCIONES` en el código, o `CHINA_SECCIONES="Título|búsqueda;…"`).
+  Pedir las 8 juntas a OTAPI tarda ~20 s; por eso cada fila se pide y se muestra por separado (~4 s la primera vez).
 - **Gasto controlado:** caché en `china_cache` (búsquedas y fichas 6 h, categorías 7 días; la web además guarda sus
-  páginas unas horas) y tope diario de llamadas en `china_uso` (`CHINA_LLAMADAS_DIA`, 3000). Al llegar al tope solo se
-  sirve lo que está en caché. Migración `20261120000000_catalogo_china.sql` (sin ella, caché y tope en memoria).
-- **Variables (Vercel, proyecto del panel):** `OTAPI_KEY` (sin ella la sección responde «no disponible»),
-  `CHINA_LLAMADAS_DIA` opcional.
-- Títulos sin el relleno de 1688 («(Al por mayor)», «(Comercio transfronterizo)»…).
-- Probado contra OTAPI real (clave de prueba) y Postgres local: búsqueda ~4 s la primera vez y 6 ms desde caché;
-  ficha con opciones, tramos y fotos del fabricante; pedido guardado como encargo.
+  páginas unas horas) y tope diario de llamadas en `china_uso` (`CHINA_LLAMADAS_DIA`, 3000). Migración
+  `20261120000000_catalogo_china.sql` (sin ella, caché y tope en memoria).
+- **Variables (Vercel, proyecto del panel):** `OTAPI_KEY` (sin ella la tienda dice «no disponible»),
+  `CHINA_LLAMADAS_DIA` y `CHINA_SECCIONES` opcionales.
+- Probado contra OTAPI real (clave de prueba) y Postgres local: portada, búsqueda, ficha, carrito y pedido guardado
+  como encargo.

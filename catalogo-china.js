@@ -1,15 +1,19 @@
 /**
- * Catálogo de 1688 en vivo para la web («Directo de China»), a través de OTAPI (OT Commerce, https://otapi.net).
- * La web no importa nada: muestra categorías, búsqueda y la ficha del producto tal como vienen de 1688, traducidos al
- * español por OTAPI, con el precio de Criollo (costo + envío en China + flete marítimo por volumen + margen, la misma
- * fórmula del importador). Nunca expone el costo del proveedor, su nombre ni el enlace de 1688.
+ * Tienda de la web: el catálogo de 1688 en vivo a través de OTAPI (OT Commerce, https://otapi.net). Es la única tienda:
+ * la web no importa nada, muestra categorías, búsqueda y la ficha del producto tal como vienen de 1688, traducidos al
+ * español por OTAPI. Precio = precio de fábrica en yuanes ÷ tasa + envío dentro de China + margen; el flete marítimo
+ * va aparte (estimado por el volumen de cada unidad, se suma en el carrito y lo confirma el equipo).
+ * Nunca expone el costo en yuanes, el nombre del proveedor ni el enlace de 1688.
  *
  *   GET  /api/web/china/estado            → { activo }
+ *   GET  /api/web/china/inicio            → { secciones: [{ titulo, q }] }: filas de la portada de la tienda (la web
+ *                                           pide cada una por separado con buscar?tam=12, para no esperar a todas)
  *   GET  /api/web/china/categorias        → categorías principales de 1688
- *   GET  /api/web/china/buscar?q=&categoria=&pagina=   → { total, paginas, pagina, items }
+ *   GET  /api/web/china/buscar?q=&categoria=&pagina=&tam=   → { total, paginas, pagina, items } (tam 12 o 24)
  *   GET  /api/web/china/producto/:id      → ficha (fotos, tramos de precio, opciones, combinaciones, especificaciones)
- *   POST /api/web/china/pedido            → { id, opciones, cantidad, nombre, telefono, email, estado, mensaje }:
- *                                           llega al panel como encargo (Solicitudes web) con el enlace de 1688
+ *   POST /api/web/china/pedido            → { items: [{ id, opciones, cantidad }], nombre, telefono, email, estado,
+ *                                           mensaje }: el carrito llega al panel como un encargo (Solicitudes web) con
+ *                                           los enlaces de 1688; el equipo confirma flete y total por WhatsApp
  *
  * Gasto: OTAPI cobra por llamada (búsqueda y ficha). Cada respuesta se guarda en la tabla china_cache (búsquedas 6 h,
  * fichas 6 h, categorías 7 días) y hay un tope diario de llamadas (CHINA_LLAMADAS_DIA, 3000 por defecto, en china_uso);
@@ -19,13 +23,21 @@
  * CHINA_LLAMADAS_DIA. Precio: TIENDA_TASA_CNY, TIENDA_ENVIO_CHINA_PCT, TIENDA_MARGEN_PCT (ver importador-1688.js).
  */
 const rateLimit = require('express-rate-limit');
-const { sugerirPrecio } = require('./importador-1688');
+const tarifas = require('./tarifas');
 
 const PROVEEDOR = 'Alibaba1688';
 const POR_PAGINA = 24;
 const MAX_PAGINAS = 20;
 const HORA = 3600 * 1000;
 const TTL = { categorias: 7 * 24 * HORA, buscar: 6 * HORA, producto: 6 * HORA };
+const FACTOR_EMPAQUE = 1.2; // volumen de una unidad + 20 % por la caja de exportación y los huecos (como el importador)
+const MAX_LINEAS = 40;
+/** Portada de la tienda: una fila de productos por búsqueda (se cambian con CHINA_SECCIONES="Título|búsqueda;…"). */
+const SECCIONES = [
+  ['Iluminación', 'lámpara led'], ['Hogar y cocina', 'utensilios de cocina'], ['Celulares y accesorios', 'accesorios para celular'],
+  ['Belleza y cuidado personal', 'maquillaje'], ['Ferretería y herramientas', 'herramientas'], ['Accesorios para motos', 'accesorios para moto'],
+  ['Juguetes', 'juguetes para niños'], ['Moda', 'ropa de mujer'],
+];
 const ID_VALIDO = /^abb-\d{5,20}$/;
 const CAT_VALIDA = /^abb-\d{1,15}$/;
 
@@ -129,11 +141,20 @@ function medidasDe(item) {
   return { largoCm: n(f.Length), anchoCm: n(f.Width), altoCm: n(f.Height), pesoKg: n(f.Weight) };
 }
 
-/** Precio de Criollo en USD para un costo en yuanes (con el flete por el volumen de una unidad, si se conoce). */
-function precioCriollo(cny, medidas) {
+/** Precio de Criollo en USD (sin flete) para un precio de fábrica en yuanes: ÷ tasa + envío en China + margen. */
+function precioCriollo(cny) {
   if (!(cny > 0)) return null;
-  const s = sugerirPrecio(cny, 'CNY', { paquete: {}, medidasUnidad: medidas });
-  return { precioUsd: s.precioUsd, conFlete: s.desglose.fleteSegun != null };
+  const tasa = Number(process.env.TIENDA_TASA_CNY) || 7.1; // yuanes por dólar
+  const envioChina = (Number(process.env.TIENDA_ENVIO_CHINA_PCT) || 8) / 100;
+  const margen = (Number(process.env.TIENDA_MARGEN_PCT) || 35) / 100;
+  return Math.max(0.01, Math.ceil((cny / tasa) * (1 + envioChina) * (1 + margen) * 100 - 1e-6) / 100);
+}
+
+/** Flete marítimo estimado de una unidad (USD) por su volumen; null si 1688 no trae las medidas. */
+function fleteUnidad(m) {
+  if (!(m.largoCm && m.anchoCm && m.altoCm)) return null;
+  const cbm = ((m.largoCm * m.anchoCm * m.altoCm) / 1e6) * FACTOR_EMPAQUE;
+  return Math.ceil(cbm * tarifas.publicas().baseUsdPorCbm * 100) / 100;
 }
 
 function tramosDe(item) {
@@ -152,7 +173,7 @@ function tarjeta(item) {
   if (!item || item.HasError || item.IsSellAllowed === false || !ID_VALIDO.test(item.Id || '')) return null;
   const tramos = tramosDe(item);
   if (!tramos.length) return null;
-  const precio = precioCriollo(tramos[0].cny, medidasDe(item));
+  const precio = precioCriollo(tramos[0].cny);
   if (!precio) return null;
   const principal = (item.Pictures || []).find((p) => p.IsMain) || (item.Pictures || [])[0];
   const ventas = Number((item.FeaturedValues || []).find((f) => f.Name === 'SalesInLast30Days')?.Value) || 0;
@@ -160,8 +181,8 @@ function tarjeta(item) {
     id: item.Id,
     titulo: texto(limpiarTitulo(item.Title || item.OriginalTitle), 200),
     foto: fotoDe(principal) || item.MainPictureUrl || null,
-    precioUsd: precio.precioUsd,
-    conFlete: precio.conFlete,
+    precioUsd: precio,
+    fleteUnidadUsd: fleteUnidad(medidasDe(item)),
     pedidoMinimo: pedidoMinimo(item, tramos),
     ventas30: ventas,
   };
@@ -195,16 +216,15 @@ function ficha(item) {
   const tramo0 = tramos[0].cny;
   const combinaciones = (item.ConfiguredItems || []).slice(0, 400).map((c) => {
     const cny = tramosDe(c)[0]?.cny || yuanes(c.Price) || tramo0;
-    const p = precioCriollo(cny, medidas);
     return {
       opciones: Object.fromEntries((c.Configurators || []).map((x) => [x.Pid, x.Vid])),
       stock: Math.max(0, Number(c.Quantity) || 0),
-      precioUsd: p ? p.precioUsd : t.precioUsd,
+      precioUsd: precioCriollo(cny) ?? t.precioUsd,
       factor: tramo0 > 0 ? cny / tramo0 : 1,
     };
   });
   // Precio por tramo de cantidad (del producto); el de cada combinación se escala con su «factor».
-  const tramosUsd = tramos.map((q) => ({ desde: q.desde, precioUsd: precioCriollo(q.cny, medidas).precioUsd }));
+  const tramosUsd = tramos.map((q) => ({ desde: q.desde, precioUsd: precioCriollo(q.cny) }));
   const especificaciones = atributos.filter((x) => !x.IsConfigurator && x.Value)
     .map((x) => ({ nombre: mayuscula(texto(x.PropertyName || x.OriginalPropertyName, 80)), valor: texto(x.Value, 300) }))
     .filter((x, i, l) => l.findIndex((y) => y.nombre === x.nombre && y.valor === x.valor) === i).slice(0, 40);
@@ -233,7 +253,7 @@ function precioPara(f, opciones, cantidad) {
   let tramo = f.tramos[0];
   for (const t of f.tramos) if (t.desde <= cantidad) tramo = t;
   const factor = combo?.factor ?? 1;
-  const precio = combo ? (factor === 1 ? tramo.precioUsd : r2(Math.max(tramo.precioUsd * factor, 0.25))) : tramo.precioUsd;
+  const precio = combo && factor !== 1 ? Math.max(0.01, Math.ceil(tramo.precioUsd * factor * 100 - 1e-6) / 100) : tramo.precioUsd;
   return { combo, precio };
 }
 
@@ -272,20 +292,33 @@ function registrar(app, { db }) {
     } catch (e) { fallo(res, e); }
   });
 
+  /** Una página de resultados (búsqueda por texto y/o categoría), guardada en caché. */
+  const buscar = (q, categoria, pagina, tam = POR_PAGINA) => conCache(`b:${categoria}:${q.toLowerCase()}:${pagina}:${tam}`, TTL.buscar, async () => {
+    const filtros = `<Provider>${PROVEEDOR}</Provider>${q ? `<ItemTitle>${xml(q)}</ItemTitle>` : ''}${categoria ? `<CategoryId>${categoria}</CategoryId>` : ''}`;
+    const j = await otapi('SearchItemsFrame', { xmlParameters: `<SearchItemsParameters>${filtros}</SearchItemsParameters>`, framePosition: String((pagina - 1) * tam), frameSize: String(tam) });
+    const total = Number(j.Result?.Items?.TotalCount) || 0;
+    const paginas = Math.min(MAX_PAGINAS, Number(j.Result?.MaximumPageCount) || Math.ceil(total / tam), Math.ceil(total / tam));
+    return { total, paginas, pagina, items: (j.Result?.Items?.Content || []).map(tarjeta).filter(Boolean) };
+  });
+
+  const secciones = () => {
+    const propias = String(process.env.CHINA_SECCIONES || '').split(';').map((x) => x.split('|').map((y) => y.trim())).filter(([t, q]) => t && q);
+    return (propias.length ? propias : SECCIONES).slice(0, 12);
+  };
+
+  // Solo la lista de filas (sin llamar a OTAPI): pedir las 8 búsquedas juntas tarda ~20 s, cada una sola ~4 s.
+  app.get('/api/web/china/inicio', (req, res) => {
+    publico(res, 600);
+    res.json({ activo: Boolean(clave()), secciones: secciones().map(([titulo, q]) => ({ titulo, q })) });
+  });
+
   app.get('/api/web/china/buscar', lectura, async (req, res) => {
     try {
       const q = texto(req.query.q, 80).replace(/\s+/g, ' ');
       const categoria = CAT_VALIDA.test(String(req.query.categoria || '')) ? String(req.query.categoria) : '';
       const pagina = Math.min(MAX_PAGINAS, Math.max(1, parseInt(req.query.pagina, 10) || 1));
       if (!q && !categoria) return res.status(400).json({ error: 'Escribe qué buscas o elige una categoría' });
-      const k = `b:${categoria}:${q.toLowerCase()}:${pagina}`;
-      const r = await conCache(k, TTL.buscar, async () => {
-        const filtros = `<Provider>${PROVEEDOR}</Provider>${q ? `<ItemTitle>${xml(q)}</ItemTitle>` : ''}${categoria ? `<CategoryId>${categoria}</CategoryId>` : ''}`;
-        const j = await otapi('SearchItemsFrame', { xmlParameters: `<SearchItemsParameters>${filtros}</SearchItemsParameters>`, framePosition: String((pagina - 1) * POR_PAGINA), frameSize: String(POR_PAGINA) });
-        const total = Number(j.Result?.Items?.TotalCount) || 0;
-        const paginas = Math.min(MAX_PAGINAS, Number(j.Result?.MaximumPageCount) || Math.ceil(total / POR_PAGINA), Math.ceil(total / POR_PAGINA));
-        return { total, paginas, pagina, items: (j.Result?.Items?.Content || []).map(tarjeta).filter(Boolean) };
-      });
+      const r = await buscar(q, categoria, pagina, String(req.query.tam) === '12' ? 12 : POR_PAGINA);
       publico(res, 600);
       res.json(r);
     } catch (e) { fallo(res, e); }
@@ -301,51 +334,66 @@ function registrar(app, { db }) {
     } catch (e) { fallo(res, e); }
   });
 
+  // El carrito completo llega como un solo encargo: el equipo compra en 1688, confirma flete y total por WhatsApp.
   app.post('/api/web/china/pedido', pedidos, async (req, res) => {
     try {
       const b = req.body || {};
       if (texto(b.sitioWeb, 200)) return res.status(201).json({ ok: true }); // trampa para bots
-      const id = String(b.id || '');
-      if (!ID_VALIDO.test(id)) return res.status(400).json({ error: 'Producto no válido' });
       const nombre = texto(b.nombre, 150);
       const telefono = texto(b.telefono, 50).replace(/[^\d+\-\s()]/g, '');
       const email = texto(b.email, 150).toLowerCase();
       if (!nombre) return res.status(400).json({ error: 'Escribe tu nombre' });
       if (!telefono && !email) return res.status(400).json({ error: 'Déjanos un teléfono (WhatsApp) o un correo para confirmarte el pedido' });
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'El correo no es válido' });
+      const pedidas = (Array.isArray(b.items) ? b.items : []).slice(0, MAX_LINEAS);
+      if (!pedidas.length) return res.status(400).json({ error: 'Tu carrito está vacío' });
 
-      const f = await leerProducto(id);
-      const cantidad = Math.min(1000000, Math.max(f.pedidoMinimo, parseInt(b.cantidad, 10) || 0));
-      const pedidas = b.opciones && typeof b.opciones === 'object' ? b.opciones : {};
-      const opciones = {};
-      for (const o of f.opciones) {
-        const v = o.valores.find((x) => x.id === pedidas[o.id]);
-        if (!v) return res.status(400).json({ error: `Elige ${o.nombre.toLowerCase()}` });
-        opciones[o.id] = v.id;
+      const lineas = [];
+      for (const it of pedidas) {
+        const id = String(it?.id || '');
+        if (!ID_VALIDO.test(id)) return res.status(400).json({ error: 'Hay un producto no válido en el carrito' });
+        let f;
+        try { f = await leerProducto(id); } catch (e) {
+          if (e instanceof ErrorChina && e.status === 404) return res.status(400).json({ error: 'Un producto de tu carrito ya no está disponible. Quítalo e intenta de nuevo.' });
+          throw e;
+        }
+        const elegidas = it.opciones && typeof it.opciones === 'object' ? it.opciones : {};
+        const opciones = {};
+        for (const o of f.opciones) {
+          const v = o.valores.find((x) => x.id === elegidas[o.id]);
+          if (!v) return res.status(400).json({ error: `Elige ${o.nombre.toLowerCase()} de «${f.titulo}»` });
+          opciones[o.id] = v.id;
+        }
+        const cantidad = Math.min(1000000, Math.max(f.pedidoMinimo, parseInt(it.cantidad, 10) || 0));
+        const { combo, precio } = precioPara(f, opciones, cantidad);
+        if (combo && combo.stock > 0 && cantidad > combo.stock) return res.status(400).json({ error: `El fabricante tiene ${combo.stock} disponibles de «${f.titulo}» en esa opción` });
+        const variante = f.opciones.map((o) => `${o.nombre}: ${o.valores.find((v) => v.id === opciones[o.id]).nombre}`).join(' · ');
+        lineas.push({ id, titulo: f.titulo, variante, opciones, cantidad, precioUsd: precio, totalUsd: r2(precio * cantidad), fleteUsd: f.fleteUnidadUsd != null ? r2(f.fleteUnidadUsd * cantidad) : null, foto: f.foto, enlace: f.enlace });
       }
-      const { combo, precio } = precioPara(f, opciones, cantidad);
-      if (f.combinaciones.length && combo && combo.stock > 0 && cantidad > combo.stock) return res.status(400).json({ error: `El proveedor tiene ${combo.stock} disponibles de esa opción` });
-      const variante = f.opciones.map((o) => `${o.nombre}: ${o.valores.find((v) => v.id === opciones[o.id]).nombre}`).join(' · ');
-      const total = r2(precio * cantidad);
+      const subtotal = r2(lineas.reduce((s, l) => s + l.totalUsd, 0));
+      const conMedidas = lineas.filter((l) => l.fleteUsd != null);
+      const flete = conMedidas.length ? r2(conMedidas.reduce((s, l) => s + l.fleteUsd, 0)) : null;
+      const faltanMedidas = lineas.length - conMedidas.length;
       const descripcion = [
-        `Pedido del catálogo «Directo de China»: ${f.titulo}`,
-        variante,
-        `Cantidad: ${cantidad} × $${precio.toFixed(2)} = $${total.toFixed(2)} (precio de la web${f.conFlete ? ', flete estimado incluido' : ', sin flete: faltan medidas'})`,
+        `Pedido de la tienda (${lineas.length} ${lineas.length === 1 ? 'producto' : 'productos'}):`,
+        ...lineas.map((l, i) => `${i + 1}. ${l.titulo}${l.variante ? ` — ${l.variante}` : ''}\n   ${l.cantidad} × $${l.precioUsd.toFixed(2)} = $${l.totalUsd.toFixed(2)}${l.enlace ? `\n   ${l.enlace}` : ''}`),
+        `Subtotal: $${subtotal.toFixed(2)}`,
+        `Flete marítimo estimado: ${flete != null ? `$${flete.toFixed(2)}` : 'por calcular'}${faltanMedidas && flete != null ? ` (sin contar ${faltanMedidas} producto(s) sin medidas)` : ''}`,
         texto(b.mensaje, 1000) && `Mensaje: ${texto(b.mensaje, 1000)}`,
       ].filter(Boolean).join('\n');
       const datos = JSON.stringify({
-        enlaces: f.enlace ? [f.enlace] : [],
-        cantidad: String(cantidad),
-        china: { id, titulo: f.titulo, variante, opciones, precioUsd: precio, totalUsd: total, conFlete: f.conFlete, foto: f.foto },
+        enlaces: [...new Set(lineas.map((l) => l.enlace).filter(Boolean))],
+        cantidad: `${lineas.reduce((s, l) => s + l.cantidad, 0)} unidades en ${lineas.length} producto(s)`,
+        tienda: { lineas, subtotalUsd: subtotal, fleteEstimadoUsd: flete, faltanMedidas },
       });
       let nuevo;
       try {
         nuevo = (await db.query('INSERT INTO web_solicitudes(tipo,nombre,telefono,email,estado_venezuela,mensaje,datos) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id', ['encargo', nombre, telefono || null, email || null, texto(b.estado, 80) || null, descripcion, datos])).rows[0].id;
       } catch (e) {
         if (e.code !== '23514') throw e; // sin la migración 20261105 (tipo «encargo»): se guarda como contacto
-        nuevo = (await db.query('INSERT INTO web_solicitudes(tipo,nombre,telefono,email,estado_venezuela,mensaje,datos) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id', ['contacto', nombre, telefono || null, email || null, texto(b.estado, 80) || null, `[Encargo] ${descripcion}${f.enlace ? `\n${f.enlace}` : ''}`, null])).rows[0].id;
+        nuevo = (await db.query('INSERT INTO web_solicitudes(tipo,nombre,telefono,email,estado_venezuela,mensaje,datos) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id', ['contacto', nombre, telefono || null, email || null, texto(b.estado, 80) || null, `[Encargo] ${descripcion}`, null])).rows[0].id;
       }
-      res.status(201).json({ ok: true, codigo: `ENC-${String(nuevo).padStart(4, '0')}`, cantidad, precioUsd: precio, totalUsd: total });
+      res.status(201).json({ ok: true, codigo: `ENC-${String(nuevo).padStart(4, '0')}`, subtotalUsd: subtotal, fleteEstimadoUsd: flete, faltanMedidas });
     } catch (e) { fallo(res, e); }
   });
 }
