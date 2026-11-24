@@ -1,5 +1,5 @@
 /**
- * API pública de la web de Criollo Cargo (sin sesión). Lee los MISMOS datos que el panel: contenedores, etiquetas…
+ * API pública de la web de Catay Cargo (sin sesión). Lee los MISMOS datos que el panel: contenedores, etiquetas…
  *
  *   GET  /api/web/zarpes              → contenedores publicados en la web: cierre, llegada, ocupación y estado
  *   GET  /api/web/rastreo/:codigo     → etapa de una etiqueta (LC-…) o de un contenedor; sin datos del cliente

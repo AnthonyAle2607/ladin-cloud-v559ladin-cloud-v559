@@ -152,7 +152,7 @@ function registrar(app, { db, auth, logAction, persistirProducto, slugDe }) {
     inst['!cols'] = [{ wch: 120 }];
     XLSX.utils.book_append_sheet(wb, inst, 'Instrucciones');
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename="plantilla-tienda-criollo-cargo.xlsx"');
+    res.setHeader('Content-Disposition', 'attachment; filename="plantilla-tienda-catay-cargo.xlsx"');
     res.send(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }));
   });
 
