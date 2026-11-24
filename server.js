@@ -1,5 +1,5 @@
 /**
- * CRIOLLO CARGO - Servidor Backend Express & API REST
+ * CATAY CARGO - Servidor Backend Express & API REST
  * Version: v559 Fix4
  */
 require('dotenv').config({ path: process.env.ENV_FILE || 'data.env' });
@@ -1241,7 +1241,7 @@ app.get('/api/quejas/:id/pdf', auth, async (req, res) => {
 
     const doc = new PDFDocument({ size: 'A4', margin: 48 });
     doc.pipe(res);
-    doc.font('Helvetica-Bold').fontSize(18).text(`CRIOLLO CARGO - INCIDENCIA INC-${String(id).padStart(4, '0')}`);
+    doc.font('Helvetica-Bold').fontSize(18).text(`CATAY CARGO - INCIDENCIA INC-${String(id).padStart(4, '0')}`);
     doc.moveDown(0.5);
     doc.font('Helvetica').fontSize(10).text(`Fecha: ${q.rows[0].fecha_incidencia || q.rows[0].creado_en}`);
     doc.text(`Asunto: ${q.rows[0].asunto}`);
@@ -1401,7 +1401,7 @@ app.get('/api/admin/backup-csv.zip', auth, async (req, res) => {
 
     const stamp = new Date();
     const pad = n => String(n).padStart(2, '0');
-    const filename = `CriolloCargo_Backup_${stamp.getFullYear()}-${pad(stamp.getMonth() + 1)}-${pad(stamp.getDate())}_${pad(stamp.getHours())}-${pad(stamp.getMinutes())}-${pad(stamp.getSeconds())}.zip`;
+    const filename = `CatayCargo_Backup_${stamp.getFullYear()}-${pad(stamp.getMonth() + 1)}-${pad(stamp.getDate())}_${pad(stamp.getHours())}-${pad(stamp.getMinutes())}-${pad(stamp.getSeconds())}.zip`;
 
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -1438,7 +1438,7 @@ require('./usuarios').registrar(app, { db, auth, intId, logAction, userOut, getB
 documentos.registrar(app, { db, auth, intId, logAction });
 
 /* ==========================================================================
-   WEB PÚBLICA DE CRIOLLO CARGO (/api/web/*) Y TIENDA EN PREVENTA (/api/tienda/*)
+   WEB PÚBLICA DE CATAY CARGO (/api/web/*) Y TIENDA EN PREVENTA (/api/tienda/*)
    ========================================================================== */
 
 webPublica.registrar(app, { db, auth, intId, logAction });
@@ -1498,7 +1498,7 @@ if (process.env.VERCEL) {
     app.listen(PORT, '0.0.0.0', () => {
       const localIps = getLocalIpAddresses();
       console.log('====================================================');
-      console.log(`🚀 CRIOLLO CARGO Servidor Activo en Puerto ${PORT}`);
+      console.log(`🚀 CATAY CARGO Servidor Activo en Puerto ${PORT}`);
       console.log(`📍 Acceso Local:  http://localhost:${PORT}`);
       if (localIps.length) {
         localIps.forEach(ip => console.log(`🌐 Acceso Red:    http://${ip}:${PORT}`));
@@ -1507,6 +1507,6 @@ if (process.env.VERCEL) {
     });
   })
   .catch(err => {
-    console.error('❌ Error iniciando Criollo Cargo:', err);
+    console.error('❌ Error iniciando Catay Cargo:', err);
     process.exit(1);
   });

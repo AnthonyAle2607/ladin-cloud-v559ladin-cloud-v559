@@ -43,7 +43,7 @@ const usd = (n) => `$${Number(n).toLocaleString('en-US', { minimumFractionDigits
  */
 const LOGO_PDF = require('path').join(__dirname, 'public', 'img', 'marca', 'logo-horizontal.png');
 function encabezadoPdf(doc, subtitulo) {
-  try { doc.image(LOGO_PDF, 40, 34, { width: 170 }); } catch { doc.font('Helvetica-Bold').fontSize(20).fillColor('#001E52').text('CRIOLLO CARGO', 40, 40); }
+  try { doc.image(LOGO_PDF, 40, 34, { width: 170 }); } catch { doc.font('Helvetica-Bold').fontSize(20).fillColor('#001E52').text('CATAY CARGO', 40, 40); }
   doc.font('Helvetica').fontSize(10).fillColor('#4a5870').text(subtitulo, 40, 76);
   doc.moveTo(40, 92).lineTo(555, 92).lineWidth(1.5).strokeColor('#FF7303').stroke();
   doc.fillColor('#001E52');

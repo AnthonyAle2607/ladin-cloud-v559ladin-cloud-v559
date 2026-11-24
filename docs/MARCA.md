@@ -1,6 +1,8 @@
-# Identidad visual (Manual de identidad de Criollo Cargo)
+# Identidad visual de Catay Cargo
 
-Fuente: `ManualIdentidadVisualCriolloCargo1.pdf` y los PNG oficiales (logotipo, isotipo y paleta).
+La marca se llamaba Criollo Cargo; desde el 24-11-2026 es **Catay Cargo**. Isotipo, colores y tipografía no cambian
+(fuente: `ManualIdentidadVisualCriolloCargo1.pdf`). Los logotipos con el nombre nuevo salen de las imágenes que envió
+el cliente (JPG de WhatsApp, carpeta «Imagenes logo»), con el fondo quitado a PNG transparente.
 
 ## Colores
 

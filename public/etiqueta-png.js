@@ -97,7 +97,7 @@
       ctx.drawImage(LOGO, (W - ancho) / 2, M, ancho, alto);
     } else {
       ctx.font = `800 64px ${FUENTE}`;
-      ctx.fillText('CRIOLLO CARGO', W / 2, M + 50);
+      ctx.fillText('CATAY CARGO', W / 2, M + 50);
     }
     ctx.font = `600 34px ${FUENTE}`;
     // Ciudad del almacén tomada de la dirección («…江门市恩平市…» → 恩平仓库)

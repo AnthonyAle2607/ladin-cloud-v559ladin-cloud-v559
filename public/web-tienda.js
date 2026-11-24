@@ -369,7 +369,7 @@
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const url = URL.createObjectURL(await r.blob());
         const a = document.createElement('a');
-        a.href = url; a.download = 'plantilla-tienda-criollo-cargo.xlsx'; document.body.appendChild(a); a.click(); a.remove();
+        a.href = url; a.download = 'plantilla-tienda-catay-cargo.xlsx'; document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
       } catch (e) { toast(`No se pudo descargar la plantilla: ${e.message}`); }
     };
@@ -828,7 +828,7 @@
 
   function pedidoModal(p) {
     const contenedor = (id) => db.containers.find((c) => String(c.id).replace(/^\D+/, '') === String(id))?.number || '';
-    const link = wa(p.telefono, `Hola ${p.nombre}, te escribimos de Criollo Cargo por tu pedido ${p.numero}.`);
+    const link = wa(p.telefono, `Hola ${p.nombre}, te escribimos de Catay Cargo por tu pedido ${p.numero}.`);
     openModal(`Pedido ${esc(p.numero)}`, `
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">${pillPedido(p.estado)}<span class="fx-muted">${esc(cuando(p.creadoEn))}</span></div>
       <div class="fx-grid">
@@ -876,7 +876,7 @@
       <div class="wt-solicitudes">${lista.map((s) => {
         const c = s.cotizacion;
         const en = s.encargo;
-        const link = wa(s.telefono, en ? `Hola ${s.nombre}, te escribimos de Criollo Cargo por tu encargo «Pídelo de China».` : `Hola ${s.nombre}, te escribimos de Criollo Cargo por tu solicitud en la web.`);
+        const link = wa(s.telefono, en ? `Hola ${s.nombre}, te escribimos de Catay Cargo por tu encargo «Pídelo de China».` : `Hola ${s.nombre}, te escribimos de Catay Cargo por tu solicitud en la web.`);
         return `<article class="fx-box wt-sol ${s.atendida ? 'is-done' : ''}">
           <div class="row" style="justify-content:space-between;align-items:baseline"><b>${esc(s.nombre)}</b><span class="fx-pill ${s.tipo === 'reserva' || en ? 'generada' : 'pendiente'}">${esc(TIPO_SOLICITUD[s.tipo] || s.tipo)}${en ? ` · ENC-${String(s.id).replace(/\D/g, '').padStart(4, '0')}` : ''}</span></div>
           <small class="fx-muted">${esc(cuando(s.creadoEn))}${s.estado ? ` · ${esc(s.estado)}` : ''}</small>

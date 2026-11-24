@@ -342,7 +342,7 @@
     }));
     document.querySelectorAll('[data-cob-wsp]').forEach((b) => (b.onclick = () => {
       const c = d.byClient[+b.dataset.cobWsp];
-      const msg = `Hola ${c.clientName}, te escribimos de Criollo Cargo para recordarte que tienes un saldo pendiente de ${usd(c.balance)} (${c.invoices.map((f) => f.code).join(', ')}). ¿Podemos ayudarte con el pago?`;
+      const msg = `Hola ${c.clientName}, te escribimos de Catay Cargo para recordarte que tienes un saldo pendiente de ${usd(c.balance)} (${c.invoices.map((f) => f.code).join(', ')}). ¿Podemos ayudarte con el pago?`;
       abrirWhatsapp(numeroWhatsapp(c.clientPhone), msg, c.clientPhone);
     }));
   }
@@ -627,7 +627,7 @@
       const caja = $('fxAcceso');
       if (!caja) return;
       const tel = String(existing.phone || '').replace(/D/g, '');
-      const mensaje = `Hola ${existing.name}, ya puedes seguir tu carga en la app de Criollo Cargo.
+      const mensaje = `Hola ${existing.name}, ya puedes seguir tu carga en la app de Catay Cargo.
 Código de cliente: ${existing.code}
 Clave: ${claveMostrada}`;
       caja.innerHTML = `<h3>Acceso a la app móvil</h3>

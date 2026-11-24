@@ -141,8 +141,8 @@ function medidasDe(item) {
   return { largoCm: n(f.Length), anchoCm: n(f.Width), altoCm: n(f.Height), pesoKg: n(f.Weight) };
 }
 
-/** Precio de Criollo en USD (sin flete) para un precio de fábrica en yuanes: ÷ tasa + envío en China + margen. */
-function precioCriollo(cny) {
+/** Precio de la tienda en USD (sin flete) para un precio de fábrica en yuanes: ÷ tasa + envío en China + margen. */
+function precioTienda(cny) {
   if (!(cny > 0)) return null;
   const tasa = Number(process.env.TIENDA_TASA_CNY) || 7.1; // yuanes por dólar
   const envioChina = (Number(process.env.TIENDA_ENVIO_CHINA_PCT) || 8) / 100;
@@ -173,7 +173,7 @@ function tarjeta(item) {
   if (!item || item.HasError || item.IsSellAllowed === false || !ID_VALIDO.test(item.Id || '')) return null;
   const tramos = tramosDe(item);
   if (!tramos.length) return null;
-  const precio = precioCriollo(tramos[0].cny);
+  const precio = precioTienda(tramos[0].cny);
   if (!precio) return null;
   const principal = (item.Pictures || []).find((p) => p.IsMain) || (item.Pictures || [])[0];
   const ventas = Number((item.FeaturedValues || []).find((f) => f.Name === 'SalesInLast30Days')?.Value) || 0;
@@ -219,12 +219,12 @@ function ficha(item) {
     return {
       opciones: Object.fromEntries((c.Configurators || []).map((x) => [x.Pid, x.Vid])),
       stock: Math.max(0, Number(c.Quantity) || 0),
-      precioUsd: precioCriollo(cny) ?? t.precioUsd,
+      precioUsd: precioTienda(cny) ?? t.precioUsd,
       factor: tramo0 > 0 ? cny / tramo0 : 1,
     };
   });
   // Precio por tramo de cantidad (del producto); el de cada combinación se escala con su «factor».
-  const tramosUsd = tramos.map((q) => ({ desde: q.desde, precioUsd: precioCriollo(q.cny) }));
+  const tramosUsd = tramos.map((q) => ({ desde: q.desde, precioUsd: precioTienda(q.cny) }));
   const especificaciones = atributos.filter((x) => !x.IsConfigurator && x.Value)
     .map((x) => ({ nombre: mayuscula(texto(x.PropertyName || x.OriginalPropertyName, 80)), valor: texto(x.Value, 300) }))
     .filter((x, i, l) => l.findIndex((y) => y.nombre === x.nombre && y.valor === x.valor) === i).slice(0, 40);

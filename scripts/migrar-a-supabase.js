@@ -1,5 +1,5 @@
 /**
- * Copia los datos de Criollo Cargo (SQLite local o Postgres local) a Supabase, conservando los id.
+ * Copia los datos de Catay Cargo (SQLite local o Postgres local) a Supabase, conservando los id.
  *
  *   node scripts/migrar-a-supabase.js                 simulacro: carga todo, muestra el resumen y DESHACE
  *   node scripts/migrar-a-supabase.js --aplicar       carga de verdad

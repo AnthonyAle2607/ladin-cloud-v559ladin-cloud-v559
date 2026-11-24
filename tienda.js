@@ -1,5 +1,5 @@
 /**
- * Tienda en preventa de la web de Criollo Cargo. Cada producto viaja en un contenedor del panel (contenedor_id), así
+ * Tienda en preventa de la web de Catay Cargo. Cada producto viaja en un contenedor del panel (contenedor_id), así
  * la fecha de llegada de la tienda es la misma que ve el equipo. El precio y el cupo se calculan SIEMPRE aquí: el
  * navegador solo manda qué variante y cuántas.
  *
